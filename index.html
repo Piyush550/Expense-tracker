@@ -117,7 +117,7 @@ th.r, td.r { text-align: right; padding-right: 0; }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field.full { grid-column: 1 / -1; }
 .field > label, .field > .legend { font-size: 13px; font-weight: 600; }
-input[type="text"], input[type="date"], select, textarea { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+input[type="text"], input[type="email"], input[type="password"], input[type="date"], select, textarea { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
 textarea { resize: vertical; min-height: 42px; }
 .amtwrap { position: relative; }
 .amtwrap span { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--muted); }
@@ -167,6 +167,15 @@ img { max-width: 100%; }
 .tools { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px; }
 .themebtn { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 0 14px; font-weight: 600; }
 .themebtn:hover { background: var(--surface-2); }
+.authcard { width: 100%; max-width: 440px; margin: 12px auto 0; }
+.authform { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+.authform .formfoot { margin-top: 4px; }
+.authmsg { margin: 10px 0 0; font-size: 13px; color: var(--pos); font-weight: 600; }
+.authmsg:empty, .err:empty { display: none; }
+.claimbtn { display: inline-flex; align-items: center; gap: 8px; padding: 5px 14px 5px 6px; border-radius: 99px; }
+.claimbtn.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.acct { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.acct-links { display: inline-flex; gap: 16px; }
 @media (max-width: 460px) {
   .tools { width: 100%; flex-wrap: nowrap; }
   .monthnav { width: auto; flex: 1; min-width: 0; }
@@ -179,29 +188,38 @@ img { max-width: 100%; }
 <div class="wrap">
   <header id="head"></header>
   <div id="banner"></div>
+  <section id="auth"></section>
   <section id="formWrap" hidden></section>
-  <div class="cols" id="cols">
+  <div class="cols" id="cols" hidden>
     <section class="sec" id="settle"></section>
     <section class="sec" id="balances"></section>
   </div>
   <section class="sec" id="log"></section>
-  <section class="sec" id="group"></section>
+  <section class="sec" id="account"></section>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 <script>
 (function () {
   "use strict";
 
   /* ============================================================
-     SETUP: paste your Firebase Realtime Database URL between the
-     quotes below. It looks like
-       https://your-project-default-rtdb.firebaseio.com
-     or
-       https://your-project-default-rtdb.asia-southeast1.firebasedatabase.app
+     SETUP: this page needs your Firebase project's web config.
+     Find it in the Firebase console under
+       Project settings → General → Your apps → Web app.
+     Paste the apiKey below. Also switch on Email/Password under
+       Authentication → Sign-in method
+     and publish the rules in database.rules.json under
+       Realtime Database → Rules.
      ============================================================ */
-  var DB_URL = "https://expense-tracker-d9d44-default-rtdb.asia-southeast1.firebasedatabase.app/";
+  var FIREBASE_CONFIG = {
+    apiKey: "AIzaSyDNsJC9WXsBhVpkQHYQGsAB0xdcaOt75hg",
+    authDomain: "expense-tracker-d9d44.firebaseapp.com",
+    databaseURL: "https://expense-tracker-d9d44-default-rtdb.asia-southeast1.firebasedatabase.app/",
+    projectId: "expense-tracker-d9d44"
+  };
 
   var $ = function (id) { return document.getElementById(id); };
   var esc = function (s) {
@@ -319,23 +337,36 @@ function computeMonth(expenses, memberIds) {
     return (neg ? "−" : "") + "₹" + r.toLocaleString("en-IN") + (f ? "." + pad2(f) : "");
   }
 
+  // phase: "loading" → "signedOut" | "unverified" | "ready"
   var S = {
-    root: null, members: [], expenses: [], settled: {},
-    ready: { g: false, e: false, s: false },
-    month: ymNow(), editing: null, groupOpen: false, delId: null,
+    root: null, auth: null, user: null, phase: "loading", authMode: "signin", authKey: "", busy: false,
+    users: [], legacy: [], expenses: [], settled: {}, refs: [],
+    ready: { u: false, l: false, e: false, s: false },
+    month: ymNow(), editing: null, delId: null, claimId: null, nameOpen: false,
     online: null, err: "", setup: false
   };
-  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
-  function allReady() { return S.ready.g && S.ready.e && S.ready.s; }
+  function allReady() { return S.ready.u && S.ready.l && S.ready.e && S.ready.s; }
 
-  function memberIdx(id) { for (var i = 0; i < S.members.length; i++) if (S.members[i].id === id) return i; return -1; }
-  function mName(id) { var i = memberIdx(id); return i < 0 ? "Former member" : S.members[i].name; }
+  // People are verified accounts (S.users). S.legacy holds names from the old fixed group,
+  // kept so past expenses still show a name until someone claims them.
+  function uid() { return S.user ? S.user.uid : ""; }
+  function findIn(list, id) { for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i]; return null; }
+  function userById(id) { return findIn(S.users, id); }
+  function me() { return userById(uid()); }
+  function person(id) { return userById(id) || findIn(S.legacy, id); }
+  function unclaimedLegacy() { return S.legacy.filter(function (m) { return !m.claimedBy; }); }
+  function byName(a, b) { var x = a.name.toLowerCase(), y = b.name.toLowerCase(); return x < y ? -1 : x > y ? 1 : (a.id < b.id ? -1 : 1); }
+  function hueFor(id) {
+    var h = 0; id = String(id || "");
+    for (var i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+    return HUES[Math.abs(h) % HUES.length];
+  }
+  function mName(id) { var p = person(id); return p ? p.name : "Former member"; }
   function chip(id, small) {
-    var i = memberIdx(id);
-    var nm = i < 0 ? "?" : S.members[i].name.trim().slice(0, 2);
-    var h = HUES[(i < 0 ? 0 : i) % HUES.length];
-    return '<span class="chip' + (small ? " sm" : "") + '" style="--h:' + h + '" aria-hidden="true">' + esc(nm) + "</span>";
+    var p = person(id);
+    var nm = p ? p.name.trim().slice(0, 2) : "?";
+    return '<span class="chip' + (small ? " sm" : "") + '" style="--h:' + hueFor(id) + '" aria-hidden="true">' + esc(nm) + "</span>";
   }
   function who(id) { return '<span class="who">' + chip(id) + "<strong>" + esc(mName(id)) + "</strong></span>"; }
 
@@ -348,9 +379,7 @@ function computeMonth(expenses, memberIds) {
     S.expenses.forEach(function (e) { if (e.date) set[e.date.slice(0, 7)] = 1; });
     return Object.keys(set).sort().reverse();
   }
-  function currentCalc() {
-    return computeMonth(monthExpenses(), S.members.map(function (m) { return m.id; }));
-  }
+  function currentCalc() { return computeMonth(monthExpenses(), []); }
   function tKey(t) { return t.from + "_" + t.to + "_" + t.paise; }
 
   var toastTimer = null;
@@ -360,8 +389,27 @@ function computeMonth(expenses, memberIds) {
   }
   function errText(e) {
     var c = e && (e.code || e.message || "");
-    if (/permission/i.test(c)) return "The database refused the change. Check the Rules step in the setup guide.";
+    if (/permission/i.test(c)) return "The database refused the change. Check that the rules from database.rules.json are published.";
     return "Could not save. Check your connection and try again.";
+  }
+  function authErr(e) {
+    var c = (e && e.code) || "";
+    var m = {
+      "auth/email-already-in-use": "An account with this email already exists. Sign in instead.",
+      "auth/invalid-email": "That email address does not look right.",
+      "auth/weak-password": "Pick a stronger password, at least 6 characters.",
+      "auth/wrong-password": "Wrong email or password.",
+      "auth/user-not-found": "Wrong email or password.",
+      "auth/invalid-credential": "Wrong email or password.",
+      "auth/invalid-login-credentials": "Wrong email or password.",
+      "auth/user-disabled": "This account has been disabled.",
+      "auth/too-many-requests": "Too many attempts. Wait a few minutes and try again.",
+      "auth/network-request-failed": "No connection. Check your internet and try again.",
+      "auth/operation-not-allowed": "Email sign-in is not switched on. Enable Email/Password under Authentication in the Firebase console.",
+      "auth/invalid-api-key": "The API key in this file is wrong. Copy it again from the Firebase console.",
+      "auth/api-key-not-valid.-please-pass-a-valid-api-key.": "The API key in this file is wrong. Copy it again from the Firebase console."
+    };
+    return m[c] || "Something went wrong. Try again.";
   }
 
   /* ---------- rendering ---------- */
@@ -382,53 +430,154 @@ function computeMonth(expenses, memberIds) {
   }
 
   function renderHead() {
-    var ms = monthExpenses(), calc = currentCalc();
-    var total = ms.reduce(function (a, e) { return a + (e.paise || 0); }, 0);
-    var opts = monthList().map(function (m) {
-      return '<option value="' + m + '"' + (m === S.month ? " selected" : "") + ">" + esc(monthLabel(m)) + "</option>";
-    }).join("");
-    var n = S.members.length;
+    var ready = S.phase === "ready";
+    var tools = themeButton(), stats = "";
+    var n = S.users.length;
+    if (ready) {
+      var ms = monthExpenses(), calc = currentCalc();
+      var total = ms.reduce(function (a, e) { return a + (e.paise || 0); }, 0);
+      var opts = monthList().map(function (m) {
+        return '<option value="' + m + '"' + (m === S.month ? " selected" : "") + ">" + esc(monthLabel(m)) + "</option>";
+      }).join("");
+      tools += '<div class="monthnav"><button type="button" data-act="prev" aria-label="Previous month">‹</button>' +
+        '<select id="monthSel" aria-label="Month">' + opts + '</select>' +
+        '<button type="button" data-act="next" aria-label="Next month">›</button></div>';
+      stats = '<dl class="stats" style="margin-top:18px"><div><dt>Spent in ' + esc(monthLabel(S.month)) + "</dt><dd>" + money(total) + "</dd></div>" +
+        "<div><dt>Expenses</dt><dd>" + ms.length + "</dd></div>" +
+        "<div><dt>Payments to settle</dt><dd>" + calc.transfers.length + "</dd></div></dl>";
+    }
     $("head").innerHTML =
       '<div class="titlebar"><div><h1>Expense Tracker</h1><p class="sub">' +
-      (n ? n + " people, equal splits, amounts in ₹" : "Shared expense tracker for the group") +
-      '</p></div><div class="tools">' + themeButton() + '<div class="monthnav"><button type="button" data-act="prev" aria-label="Previous month">‹</button>' +
-      '<select id="monthSel" aria-label="Month">' + opts + '</select>' +
-      '<button type="button" data-act="next" aria-label="Next month">›</button></div></div></div>' +
-      '<dl class="stats" style="margin-top:18px"><div><dt>Spent in ' + esc(monthLabel(S.month)) + "</dt><dd>" + money(total) + "</dd></div>" +
-      "<div><dt>Expenses</dt><dd>" + ms.length + "</dd></div>" +
-      "<div><dt>Payments to settle</dt><dd>" + calc.transfers.length + "</dd></div></dl>";
+      (ready && n ? n + (n === 1 ? " member" : " members") + ", equal splits, amounts in ₹" : "Shared expense tracker for the group") +
+      '</p></div><div class="tools">' + tools + "</div></div>" + stats;
   }
 
-  function setupGuide(title, intro) {
-    return '<div class="card"><h3 style="font-size:20px">' + esc(title) + "</h3><p class=\"muted\" style=\"margin:6px 0 0\">" + esc(intro) + "</p>" +
-      '<ol class="steps"><li>Open the Firebase console and create a project.</li><li>Create a Realtime Database and copy its address.</li>' +
-      "<li>Set the Rules so the group can read and write.</li><li>Paste the address into this file where it says PASTE_YOUR_DATABASE_URL_HERE, then upload the file again.</li></ol></div>";
+  function setupGuide() {
+    return '<div class="card"><h3 style="font-size:20px">Finish setting up sign-in</h3><p class="muted" style="margin:6px 0 0">Accounts use Firebase Authentication. Do this once in the Firebase console:</p>' +
+      '<ol class="steps"><li>Authentication → Sign-in method: enable <strong>Email/Password</strong>.</li>' +
+      "<li>Project settings → General → Your apps: add a Web app if there is none, and copy its <strong>apiKey</strong>.</li>" +
+      "<li>Paste it into this file where it says PASTE_YOUR_WEB_API_KEY_HERE.</li>" +
+      "<li>Realtime Database → Rules: paste the contents of database.rules.json and publish.</li></ol></div>";
   }
 
   function renderBanner() {
     var h = "";
     if (S.setup) {
-      h = setupGuide("One setup step is left", "This page needs the address of your Firebase database before it can save anything.");
+      h = setupGuide();
     } else if (S.err) {
       h = '<div class="banner warn">' + esc(S.err) + "</div>";
+    } else if (S.phase !== "ready") {
+      h = "";
     } else if (S.online === false && allReady()) {
       h = '<div class="banner">You are offline. Changes you make now will sync when the connection comes back.</div>';
-    } else if (S.ready.g && !S.members.length) {
-      var inputs = "";
-      for (var i = 0; i < 6; i++) inputs += '<input type="text" id="su-' + i + '" maxlength="24" placeholder="Person ' + (i + 1) + '" aria-label="Person ' + (i + 1) + ' name" autocomplete="off">';
-      h = '<div class="card"><h3 style="font-size:20px">Who is in the group?</h3><p class="muted" style="margin:6px 0 0">Enter everyone\'s name once. Everyone who opens this link sees the same list. You can rename people or add more later.</p>' +
-        '<div class="setup-grid">' + inputs + '</div><div class="formfoot" style="margin-top:0"><button type="button" class="btn primary" data-act="create-group">Create group</button><span class="err" id="su-err"></span></div></div>';
+    } else if (allReady() && me() && !me().legacyDone && unclaimedLegacy().length) {
+      var btns = unclaimedLegacy().sort(byName).map(function (m) {
+        var on = S.claimId === m.id;
+        return '<button type="button" class="btn claimbtn' + (on ? " on" : "") + '" data-act="claim" data-id="' + esc(m.id) + '">' + chip(m.id, true) + "<span>" + (on ? "Yes, I am " : "") + esc(m.name) + "</span></button>";
+      }).join("");
+      h = '<div class="card"><h3 style="font-size:20px">Were you in the old group?</h3><p class="muted" style="margin:6px 0 0">This tracker used to have a fixed list of names. If one of them is you, pick it and every past expense under that name moves to your account.</p>' +
+        '<div class="picks" style="margin:14px 0">' + btns + '</div><div class="formfoot" style="margin-top:0"><button type="button" class="btn" data-act="claim-skip">None of these, I am new</button></div></div>';
     }
     $("banner").innerHTML = h;
   }
 
+  /* ---------- sign in / sign up / verify ---------- */
+  function authField(id, label, type, auto, extra) {
+    return '<div class="field"><label for="' + id + '">' + label + '</label><input type="' + type + '" id="' + id + '" autocomplete="' + auto + '"' + (extra || "") + "></div>";
+  }
+  function renderAuth() {
+    var key = S.setup || (S.err && S.phase === "loading") ? "none" : S.phase + ":" + S.authMode + ":" + (S.user ? S.user.uid : "");
+    if (S.authKey === key) return;
+    S.authKey = key;
+    var el = $("auth"), h = "";
+    var msgs = '<div class="err" id="a-err" style="margin-top:4px"></div><p class="authmsg" id="a-msg"></p>';
+    if (key === "none" || S.phase === "ready") h = "";
+    else if (S.phase === "loading") h = '<div class="card authcard muted">Checking your sign-in…</div>';
+    else if (S.phase === "unverified") {
+      h = '<div class="card authcard"><h3 style="font-size:20px">Verify your email</h3><p class="muted" style="margin:6px 0 0">We sent a verification link to <strong>' + esc(S.user.email) +
+        "</strong>. Open it, then come back here. Check your spam folder if it is not in your inbox.</p>" +
+        '<div class="formfoot"><button type="button" class="btn primary" id="a-submit" data-act="verify-check">I have verified my email</button><button type="button" class="btn" data-act="verify-resend">Resend email</button></div>' + msgs +
+        '<p class="note">Wrong email? <button type="button" class="linkbtn" data-act="signout">Sign out</button> and sign up again.</p></div>';
+    } else if (S.authMode === "signup") {
+      h = '<div class="card authcard"><h3 style="font-size:20px">Create your account</h3><p class="muted" style="margin:6px 0 0">Everyone with an account can be added to expenses.</p>' +
+        '<form class="authform" id="authForm" data-mode="signup" novalidate>' +
+        authField("a-name", "Your name", "text", "name", ' maxlength="24" placeholder="What the group calls you"') +
+        authField("a-email", "Email", "email", "email") +
+        authField("a-pw", "Password", "password", "new-password", ' placeholder="At least 6 characters"') +
+        authField("a-pw2", "Confirm password", "password", "new-password") +
+        '<div class="formfoot"><button type="submit" class="btn primary" id="a-submit">Create account</button></div>' + msgs + "</form>" +
+        '<p class="note">Already have an account? <button type="button" class="linkbtn" data-act="auth-mode" data-mode="signin">Sign in</button></p></div>';
+    } else if (S.authMode === "reset") {
+      h = '<div class="card authcard"><h3 style="font-size:20px">Reset your password</h3><p class="muted" style="margin:6px 0 0">We will email you a link to choose a new password.</p>' +
+        '<form class="authform" id="authForm" data-mode="reset" novalidate>' + authField("a-email", "Email", "email", "email") +
+        '<div class="formfoot"><button type="submit" class="btn primary" id="a-submit">Send reset link</button></div>' + msgs + "</form>" +
+        '<p class="note"><button type="button" class="linkbtn" data-act="auth-mode" data-mode="signin">Back to sign in</button></p></div>';
+    } else {
+      h = '<div class="card authcard"><h3 style="font-size:20px">Sign in</h3><p class="muted" style="margin:6px 0 0">Use the email you signed up with.</p>' +
+        '<form class="authform" id="authForm" data-mode="signin" novalidate>' + authField("a-email", "Email", "email", "email") + authField("a-pw", "Password", "password", "current-password") +
+        '<div class="formfoot"><button type="submit" class="btn primary" id="a-submit">Sign in</button><button type="button" class="linkbtn" data-act="auth-mode" data-mode="reset">Forgot password?</button></div>' + msgs + "</form>" +
+        '<p class="note">New here? <button type="button" class="linkbtn" data-act="auth-mode" data-mode="signup">Create an account</button></p></div>';
+    }
+    el.innerHTML = h;
+  }
+  function setAuthMsg(text, isErr) {
+    var e = $("a-err"), m = $("a-msg");
+    if (e) e.textContent = isErr ? text : "";
+    if (m) m.textContent = isErr ? "" : text;
+  }
+  function setBusy(on) { S.busy = on; var b = $("a-submit"); if (b) b.disabled = on; }
+  function val(id) { var el = $(id); return el ? el.value : ""; }
+  function validEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); }
+
+  function signIn() {
+    var email = val("a-email").trim(), pw = val("a-pw");
+    if (!validEmail(email)) return setAuthMsg("Enter your email address.", true);
+    if (!pw) return setAuthMsg("Enter your password.", true);
+    setBusy(true); setAuthMsg("", false);
+    S.auth.signInWithEmailAndPassword(email, pw).catch(function (e) { setBusy(false); setAuthMsg(authErr(e), true); });
+  }
+  function signUp() {
+    var name = val("a-name").trim().slice(0, 24), email = val("a-email").trim(), pw = val("a-pw"), pw2 = val("a-pw2");
+    if (!name) return setAuthMsg("Enter your name. It is what everyone sees on expenses.", true);
+    if (!validEmail(email)) return setAuthMsg("Enter a valid email address.", true);
+    if (pw.length < 6) return setAuthMsg("Use a password of at least 6 characters.", true);
+    if (pw !== pw2) return setAuthMsg("The two passwords do not match.", true);
+    setBusy(true); setAuthMsg("", false);
+    // onAuthStateChanged switches to the verify screen as soon as the account exists.
+    S.auth.createUserWithEmailAndPassword(email, pw).then(function (cred) {
+      return cred.user.updateProfile({ displayName: name }).then(function () { return cred.user.sendEmailVerification(); });
+    }).then(function () { setAuthMsg("Verification email sent.", false); }, function (e) { setBusy(false); setAuthMsg(authErr(e), true); });
+  }
+  function resetPassword() {
+    var email = val("a-email").trim();
+    if (!validEmail(email)) return setAuthMsg("Enter your email address.", true);
+    setBusy(true);
+    var done = function () { setBusy(false); setAuthMsg("If an account exists for " + email + ", a reset link is on its way.", false); };
+    S.auth.sendPasswordResetEmail(email).then(done, function (e) {
+      if (e && e.code === "auth/user-not-found") done(); else { setBusy(false); setAuthMsg(authErr(e), true); }
+    });
+  }
+  function checkVerified(silent) {
+    var u = S.auth.currentUser; if (!u || S.busy) return;
+    if (!silent) setBusy(true);
+    u.reload().then(function () {
+      var cur = S.auth.currentUser;
+      // Refresh the ID token so the database rules see email_verified = true.
+      if (cur && cur.emailVerified) return cur.getIdToken(true).then(function () { onUser(cur); });
+      if (!silent) { setBusy(false); setAuthMsg("Not verified yet. Open the link in the email first, then try again.", true); }
+    }).catch(function (e) { if (!silent) { setBusy(false); setAuthMsg(authErr(e), true); } });
+  }
+  function resendVerification() {
+    var u = S.auth.currentUser; if (!u) return;
+    u.sendEmailVerification().then(function () { setAuthMsg("Sent a new link to " + u.email + ".", false); }, function (e) { setAuthMsg(authErr(e), true); });
+  }
+
   function renderSettle() {
     var el = $("settle");
-    if (!S.members.length) { el.innerHTML = ""; return; }
     var ms = monthExpenses();
     var head = '<div class="sechead"><h2>Settle up for ' + esc(monthLabel(S.month)) + "</h2>" +
       (ms.length ? '<button type="button" class="btn small" data-act="copy">Copy summary</button>' : "") + "</div>";
-    if (!S.ready.e) { el.innerHTML = head + '<div class="card muted">Loading the ledger…</div>'; return; }
+    if (!allReady()) { el.innerHTML = head + '<div class="card muted">Loading the ledger…</div>'; return; }
     if (!ms.length) { el.innerHTML = head + '<div class="card muted">No expenses in this month yet. Payments will appear here once someone adds one.</div>'; return; }
     var calc = currentCalc(), ts = calc.transfers;
     if (!ts.length) { el.innerHTML = head + '<div class="allsq">Everyone is square for this month.</div>'; return; }
@@ -453,31 +602,34 @@ function computeMonth(expenses, memberIds) {
 
   function renderBalances() {
     var el = $("balances");
-    if (!S.members.length) { el.innerHTML = ""; return; }
+    var head = '<div class="sechead"><h2>Who paid and who used</h2></div>';
+    if (!allReady()) { el.innerHTML = head + '<div class="card muted">Loading…</div>'; return; }
     var calc = currentCalc();
-    var rows = S.members.map(function (m) {
-      var n = calc.net[m.id] || 0;
+    var ids = Object.keys(calc.net).map(function (id) { return { id: id, name: mName(id) }; }).sort(byName);
+    if (!ids.length) { el.innerHTML = head + '<div class="card muted">Nobody has spent anything in ' + esc(monthLabel(S.month)) + " yet.</div>"; return; }
+    var rows = ids.map(function (p) {
+      var n = calc.net[p.id] || 0;
       var b = n > 0 ? '<span class="badge pos">gets ' + money(n) + "</span>" : n < 0 ? '<span class="badge neg">owes ' + money(-n) + "</span>" : '<span class="badge zero">square</span>';
-      return "<tr><td>" + who(m.id) + '</td><td class="r amt">' + money(calc.paid[m.id] || 0) + '</td><td class="r amt">' + money(calc.share[m.id] || 0) + '</td><td class="r">' + b + "</td></tr>";
+      return "<tr><td>" + who(p.id) + '</td><td class="r amt">' + money(calc.paid[p.id] || 0) + '</td><td class="r amt">' + money(calc.share[p.id] || 0) + '</td><td class="r">' + b + "</td></tr>";
     }).join("");
-    el.innerHTML = '<div class="sechead"><h2>Who paid and who used</h2></div><div class="card"><div class="tablewrap"><table><thead><tr><th>Person</th><th class="r">Paid out</th><th class="r">Their share</th><th class="r">Net</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
+    el.innerHTML = head + '<div class="card"><div class="tablewrap"><table><thead><tr><th>Person</th><th class="r">Paid out</th><th class="r">Their share</th><th class="r">Net</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
       '<p class="note">Paid out is what the person put down. Their share is their cut of every expense they were part of.</p></div>';
   }
 
   function renderLog() {
     var el = $("log");
-    if (!S.members.length) { el.innerHTML = ""; return; }
     var ms = monthExpenses();
-    var all = S.members.length;
+    var all = S.users.length;
     var head = '<div class="sechead"><h2>Expenses in ' + esc(monthLabel(S.month)) + '</h2><div class="headbtns">' +
       '<button type="button" class="btn small" data-act="csv-month">Download month (CSV)</button>' +
       '<button type="button" class="btn small" data-act="csv-all">Download everything (CSV)</button>' +
-      '<button type="button" class="btn primary" data-act="add">+ Add expense</button></div></div>';
-    if (!S.ready.e) { el.innerHTML = head + '<div class="card empty">Loading the ledger…</div>'; return; }
+      '<button type="button" class="btn primary" data-act="add"' + (allReady() ? "" : " disabled") + '>+ Add expense</button></div></div>';
+    if (!allReady()) { el.innerHTML = head + '<div class="card empty">Loading the ledger…</div>'; return; }
     if (!ms.length) { el.innerHTML = head + '<div class="card empty">Nothing logged for ' + esc(monthLabel(S.month)) + ". Whoever paid for the last outing can add it with the button above.</div>"; return; }
     var rows = ms.map(function (e) {
       var ppl = (e.people || []);
-      var withHtml = ppl.length === all ? '<span class="muted">Everyone (' + all + ")</span>" :
+      var everyone = all > 1 && ppl.length === all && S.users.every(function (u) { return ppl.indexOf(u.id) >= 0; });
+      var withHtml = everyone ? '<span class="muted">Everyone (' + all + ")</span>" :
         ppl.map(function (id) { return '<span title="' + esc(mName(id)) + '">' + chip(id, true) + "</span>"; }).join("");
       var each = ppl.length ? Math.round(e.paise / ppl.length) : 0;
       var act = '<button type="button" class="btn small" data-act="edit" data-id="' + esc(e.id) + '">Edit</button>' +
@@ -490,36 +642,45 @@ function computeMonth(expenses, memberIds) {
     el.innerHTML = head + '<div class="card" style="padding:0"><ul class="log">' + rows + "</ul></div>";
   }
 
-  function renderGroup() {
-    var el = $("group");
-    if (!S.members.length) { el.innerHTML = ""; return; }
-    if (!S.groupOpen) { el.innerHTML = '<button type="button" class="linkbtn" data-act="group-open">Edit group members</button>'; return; }
-    var rows = S.members.map(function (m) {
-      return '<div class="field"><label for="gm-' + esc(m.id) + '">' + chip(m.id, true) + ' Name</label><input type="text" id="gm-' + esc(m.id) + '" maxlength="24" value="' + esc(m.name) + '"></div>';
-    }).join("");
-    el.innerHTML = '<div class="card"><div class="sechead"><h2>Group members</h2></div><div class="setup-grid" style="margin-top:0">' + rows +
-      '<div class="field"><label for="gm-new">Add a person</label><input type="text" id="gm-new" maxlength="24" placeholder="New name"></div></div>' +
-      '<p class="note" style="margin-top:0">Renaming changes the name everywhere, including past months. People cannot be removed once they are in the group, so past expenses stay correct.</p>' +
-      '<div class="formfoot"><button type="button" class="btn primary" data-act="group-save">Save members</button><button type="button" class="btn" data-act="group-close">Cancel</button><span class="err" id="gm-err"></span></div></div>';
+  function renderAccount() {
+    var el = $("account"), p = me();
+    if (!p) { el.innerHTML = ""; return; }
+    if (S.nameOpen) {
+      el.innerHTML = '<form class="card" id="nameForm" novalidate><div class="sechead"><h2>Your name</h2></div>' +
+        '<div class="field" style="max-width:320px"><label for="n-name">Shown to everyone on expenses</label><input type="text" id="n-name" maxlength="24" value="' + esc(p.name) + '" autocomplete="name"></div>' +
+        '<div class="formfoot"><button type="submit" class="btn primary">Save name</button><button type="button" class="btn" data-act="name-close">Cancel</button><span class="err" id="n-err"></span></div></form>';
+      return;
+    }
+    el.innerHTML = '<div class="acct"><span class="muted">Signed in as</span>' + who(p.id) + '<span class="muted">' + esc(S.user.email) + "</span>" +
+      '<span class="acct-links"><button type="button" class="linkbtn" data-act="name-open">Change my name</button><button type="button" class="linkbtn" data-act="signout">Sign out</button></span></div>';
   }
 
   function render() {
-    renderHead(); renderBanner(); renderSettle(); renderBalances(); renderLog();
-    if (!S.groupOpen) renderGroup();
-    $("cols").hidden = !S.members.length;
+    renderHead(); renderBanner(); renderAuth();
+    var ready = S.phase === "ready";
+    $("cols").hidden = !ready;
+    if (!ready) {
+      $("settle").innerHTML = $("balances").innerHTML = $("log").innerHTML = $("account").innerHTML = "";
+      if (S.editing !== null || !$("formWrap").hidden) closeForm();
+      return;
+    }
+    renderSettle(); renderBalances(); renderLog();
+    if (!S.nameOpen) renderAccount();
   }
 
   /* ---------- expense form ---------- */
   function openForm(id) {
     var e = id ? S.expenses.filter(function (x) { return x.id === id; })[0] : null;
     S.editing = e ? e.id : null;
-    var lastPayer = lsGet("outing-ledger-payer");
-    var payer = e ? e.payer : (memberIdx(lastPayer) >= 0 ? lastPayer : S.members[0].id);
-    var people = e ? e.people : S.members.map(function (m) { return m.id; });
+    // Everyone with a verified account, plus any old-group names already on this expense.
+    var list = S.users.slice();
+    if (e) [e.payer].concat(e.people).forEach(function (pid) { if (pid && !findIn(list, pid)) list.push({ id: pid, name: mName(pid), email: "" }); });
+    var payer = e ? e.payer : uid();
+    var people = e ? e.people : S.users.map(function (u) { return u.id; });
     var defDate = e ? e.date : (S.month === ymNow() ? todayStr() : S.month + "-01");
-    var payOpts = S.members.map(function (m) { return '<option value="' + esc(m.id) + '"' + (m.id === payer ? " selected" : "") + ">" + esc(m.name) + "</option>"; }).join("");
-    var picks = S.members.map(function (m) {
-      return '<label class="pick"><input type="checkbox" name="person" value="' + esc(m.id) + '"' + (people.indexOf(m.id) >= 0 ? " checked" : "") + ">" + chip(m.id, true) + "<span>" + esc(m.name) + "</span></label>";
+    var payOpts = list.map(function (m) { return '<option value="' + esc(m.id) + '"' + (m.id === payer ? " selected" : "") + ">" + esc(m.name) + (m.id === uid() ? " (you)" : "") + "</option>"; }).join("");
+    var picks = list.map(function (m) {
+      return '<label class="pick"' + (m.email ? ' title="' + esc(m.email) + '"' : "") + '><input type="checkbox" name="person" value="' + esc(m.id) + '"' + (people.indexOf(m.id) >= 0 ? " checked" : "") + ">" + chip(m.id, true) + "<span>" + esc(m.name) + "</span></label>";
     }).join("");
     var amtVal = e ? String(e.paise / 100) : "";
     var w = $("formWrap");
@@ -565,38 +726,45 @@ function computeMonth(expenses, memberIds) {
     var now = Date.now();
     var pm = {}; people.forEach(function (p) { pm[p] = true; });
     var wasEdit = !!S.editing;
-    lsSet("outing-ledger-payer", payer);
     S.month = date.slice(0, 7);
-    S.root.child("expenses/" + id).set({ date: date, name: name, paise: paise, payer: payer, people: pm, remarks: rem, createdAt: old && old.createdAt ? old.createdAt : now, updatedAt: now })
-      .catch(function (e) { toast(errText(e)); });
+    S.root.child("expenses/" + id).set({
+      date: date, name: name, paise: paise, payer: payer, people: pm, remarks: rem,
+      createdAt: old && old.createdAt ? old.createdAt : now, createdBy: old && old.createdBy ? old.createdBy : uid(),
+      updatedAt: now, updatedBy: uid()
+    }).catch(function (e) { toast(errText(e)); });
     closeForm(); render(); toast(wasEdit ? "Expense updated" : "Expense added");
   }
 
   /* ---------- actions ---------- */
-  function membersToObj(list) {
-    var o = {}; list.forEach(function (m, i) { o[m.id] = { name: m.name, order: i }; }); return o;
+  // Move every past expense and Paid tick from an old-group name to the signed-in account, in one atomic update.
+  function claimLegacy(oldId) {
+    var newId = uid(), up = {};
+    S.expenses.forEach(function (e) {
+      if (e.payer === oldId) up["expenses/" + e.id + "/payer"] = newId;
+      if (e.people.indexOf(oldId) >= 0) { up["expenses/" + e.id + "/people/" + oldId] = null; up["expenses/" + e.id + "/people/" + newId] = true; }
+    });
+    Object.keys(S.settled).forEach(function (m) {
+      Object.keys(S.settled[m] || {}).forEach(function (k) {
+        var p = k.split("_");
+        if (p.length !== 3 || (p[0] !== oldId && p[1] !== oldId)) return;
+        up["settled/" + m + "/" + k] = null;
+        up["settled/" + m + "/" + (p[0] === oldId ? newId : p[0]) + "_" + (p[1] === oldId ? newId : p[1]) + "_" + p[2]] = true;
+      });
+    });
+    up["members/" + oldId + "/claimedBy"] = newId;
+    up["users/" + newId + "/legacyDone"] = true;
+    S.claimId = null;
+    S.root.update(up).then(function () { toast("Past expenses moved to your account"); }, function (e) { toast(errText(e)); });
   }
-  function createGroup() {
-    var names = [];
-    for (var i = 0; i < 6; i++) { var el = $("su-" + i); var v = el ? el.value.trim() : ""; if (v) names.push(v); }
-    var err = $("su-err");
-    if (names.length < 2) { err.textContent = "Enter at least two names."; return; }
-    var seen = {}; for (var j = 0; j < names.length; j++) { var k = names[j].toLowerCase(); if (seen[k]) { err.textContent = "Two people have the same name. Make them different, like Amit R and Amit K."; return; } seen[k] = 1; }
-    var base = Date.now().toString(36);
-    var members = names.map(function (n, i) { return { id: "m" + base + i, name: n }; });
-    S.root.child("members").set(membersToObj(members)).then(function () { toast("Group created"); })
-      .catch(function (e) { err.textContent = errText(e); });
+  function skipClaim() {
+    S.root.child("users/" + uid() + "/legacyDone").set(true).catch(function (e) { toast(errText(e)); });
   }
-  function saveGroup() {
-    var err = $("gm-err");
-    var members = S.members.map(function (m) { var el = $("gm-" + m.id); return { id: m.id, name: (el && el.value.trim()) || m.name }; });
-    var add = $("gm-new").value.trim();
-    if (add) members.push({ id: "m" + Date.now().toString(36) + members.length, name: add });
-    var seen = {};
-    for (var i = 0; i < members.length; i++) { var k = members[i].name.toLowerCase(); if (seen[k]) { err.textContent = "Two people have the same name. Make them different."; return; } seen[k] = 1; }
-    if (members.length > 12) { err.textContent = "The group can have up to 12 people."; return; }
-    S.root.child("members").set(membersToObj(members)).catch(function (e) { toast(errText(e)); });
-    S.groupOpen = false; render(); toast("Members saved");
+  function saveName() {
+    var v = $("n-name").value.trim().slice(0, 24), err = $("n-err");
+    if (!v) { err.textContent = "Enter a name."; return; }
+    S.root.child("users/" + uid() + "/name").set(v).catch(function (e) { toast(errText(e)); });
+    S.user.updateProfile({ displayName: v }).catch(function () { /* the database copy is what others see */ });
+    S.nameOpen = false; renderAccount(); toast("Name updated");
   }
   function togglePaid(key, on) {
     var ref = S.root.child("settled/" + S.month + "/" + key);
@@ -651,6 +819,7 @@ function computeMonth(expenses, memberIds) {
     var b = ev.target.closest("[data-act]"); if (!b) { if (S.delId) { S.delId = null; renderLog(); } return; }
     var act = b.getAttribute("data-act");
     if (act !== "del" && S.delId) { S.delId = null; renderLog(); }
+    if (act !== "claim" && S.claimId) { S.claimId = null; renderBanner(); }
     switch (act) {
       case "theme": setTheme(currentTheme() === "dark" ? "light" : "dark"); break;
       case "prev": S.month = shiftMonth(S.month, -1); render(); break;
@@ -669,10 +838,24 @@ function computeMonth(expenses, memberIds) {
       case "copy": copySummary(); break;
       case "csv-month": downloadCsv(false); break;
       case "csv-all": downloadCsv(true); break;
-      case "create-group": createGroup(); break;
-      case "group-open": S.groupOpen = true; renderGroup(); break;
-      case "group-close": S.groupOpen = false; renderGroup(); break;
-      case "group-save": saveGroup(); break;
+      case "auth-mode": {
+        var email = val("a-email");
+        S.authMode = b.getAttribute("data-mode"); renderAuth();
+        if ($("a-email")) { $("a-email").value = email; }
+        var first = document.querySelector("#authForm input"); if (first) first.focus();
+        break;
+      }
+      case "verify-check": checkVerified(false); break;
+      case "verify-resend": resendVerification(); break;
+      case "signout": S.auth.signOut(); break;
+      case "claim": {
+        var cid = b.getAttribute("data-id");
+        if (S.claimId === cid) claimLegacy(cid); else { S.claimId = cid; renderBanner(); }
+        break;
+      }
+      case "claim-skip": skipClaim(); break;
+      case "name-open": S.nameOpen = true; renderAccount(); $("n-name").focus(); break;
+      case "name-close": S.nameOpen = false; renderAccount(); break;
     }
   });
   document.addEventListener("change", function (ev) {
@@ -683,43 +866,87 @@ function computeMonth(expenses, memberIds) {
   });
   document.addEventListener("submit", function (ev) {
     ev.preventDefault();
-    if (ev.target.id === "expForm") saveExpense();
+    var f = ev.target;
+    if (f.id === "expForm") saveExpense();
+    else if (f.id === "nameForm") saveName();
+    else if (f.id === "authForm" && !S.busy) {
+      var mode = f.getAttribute("data-mode");
+      if (mode === "signup") signUp(); else if (mode === "reset") resetPassword(); else signIn();
+    }
   });
+  // Coming back from the verification email in another tab: pick it up without a click.
+  window.addEventListener("focus", function () { if (S.phase === "unverified") checkVerified(true); });
 
   /* ---------- live data from Firebase ---------- */
   function onErr(e) {
     S.err = /permission/i.test((e && (e.code || e.message)) || "")
-      ? "The database refused to share its data. Open Rules in the Firebase console and publish the rules from the setup guide."
+      ? "The database refused to share its data. Publish the rules from database.rules.json under Realtime Database → Rules in the Firebase console."
       : "Could not load the ledger right now. Reload the page to try again.";
-    S.ready = { g: true, e: true, s: true }; render();
+    S.ready = { u: true, l: true, e: true, s: true }; render();
+  }
+  function detachData() {
+    S.refs.forEach(function (r) { r.off(); });
+    S.refs = []; S.users = []; S.legacy = []; S.expenses = []; S.settled = {};
+    S.ready = { u: false, l: false, e: false, s: false };
+    S.err = "";
+  }
+  function attachData(u) {
+    function listen(path, cb) { var r = S.root.child(path); r.on("value", cb, onErr); S.refs.push(r); }
+    listen("users", function (snap) {
+      var v = snap.val() || {};
+      S.users = Object.keys(v).map(function (id) {
+        var x = v[id] || {};
+        return { id: id, name: String(x.name || "Unnamed"), email: String(x.email || ""), legacyDone: !!x.legacyDone };
+      }).sort(byName);
+      S.ready.u = true; render();
+    });
+    listen("members", function (snap) {
+      var v = snap.val() || {};
+      S.legacy = Object.keys(v).map(function (id) { var x = v[id] || {}; return { id: id, name: String(x.name || "Unnamed"), claimedBy: x.claimedBy || null }; });
+      S.ready.l = true; render();
+    });
+    listen("expenses", function (snap) {
+      var v = snap.val() || {};
+      S.expenses = Object.keys(v).map(function (id) {
+        var x = v[id] || {};
+        return { id: id, date: x.date, name: x.name, paise: x.paise, payer: x.payer, people: Object.keys(x.people || {}), remarks: x.remarks || "", createdAt: x.createdAt || 0, createdBy: x.createdBy || "" };
+      });
+      S.ready.e = true; render();
+    });
+    listen("settled", function (snap) {
+      S.settled = snap.val() || {}; S.ready.s = true; render();
+    });
+    // First verified sign-in creates the profile that puts this person in everyone's expense form.
+    var ref = S.root.child("users/" + u.uid);
+    ref.once("value").then(function (snap) {
+      if (snap.exists()) return snap.child("email").val() === u.email ? null : ref.child("email").set(u.email);
+      var name = String(u.displayName || u.email.split("@")[0] || "Me").trim().slice(0, 24);
+      return ref.set({ name: name, email: u.email, createdAt: Date.now() });
+    }).catch(function (e) { toast(errText(e)); });
+  }
+  function onUser(u) {
+    detachData();
+    S.user = u || null; S.nameOpen = false; S.claimId = null; S.busy = false;
+    if (!u) S.phase = "signedOut";
+    else if (!u.emailVerified) S.phase = "unverified";
+    else { S.phase = "ready"; attachData(u); }
+    render();
+    // The cached user can be stale if the link was opened since the last visit.
+    if (u && !u.emailVerified) checkVerified(true);
   }
   function start() {
-    if (!DB_URL || /PASTE_YOUR/.test(DB_URL)) { S.setup = true; S.ready = { g: true, e: true, s: true }; render(); return; }
-    if (typeof firebase === "undefined") { S.err = "Could not load Firebase. Check your internet connection and reload."; S.ready = { g: true, e: true, s: true }; render(); return; }
+    var cfg = FIREBASE_CONFIG;
+    if (!cfg.apiKey || /PASTE_YOUR/.test(cfg.apiKey) || !cfg.databaseURL) { S.setup = true; render(); return; }
+    if (typeof firebase === "undefined" || !firebase.auth) { S.err = "Could not load Firebase. Check your internet connection and reload."; render(); return; }
     try {
-      firebase.initializeApp({ databaseURL: DB_URL });
+      firebase.initializeApp(cfg);
       var database = firebase.database();
       S.root = database.ref("ledger");
+      S.auth = firebase.auth();
       database.ref(".info/connected").on("value", function (s) { S.online = s.val() === true; renderBanner(); });
-      S.root.child("members").on("value", function (snap) {
-        var v = snap.val() || {};
-        S.members = Object.keys(v).map(function (id) { return { id: id, name: String((v[id] && v[id].name) || "Unnamed"), order: (v[id] && v[id].order) || 0 }; })
-          .sort(function (a, b) { return a.order - b.order; });
-        S.ready.g = true; render();
-      }, onErr);
-      S.root.child("expenses").on("value", function (snap) {
-        var v = snap.val() || {};
-        S.expenses = Object.keys(v).map(function (id) {
-          var x = v[id] || {};
-          return { id: id, date: x.date, name: x.name, paise: x.paise, payer: x.payer, people: Object.keys(x.people || {}), remarks: x.remarks || "", createdAt: x.createdAt || 0 };
-        });
-        S.ready.e = true; render();
-      }, onErr);
-      S.root.child("settled").on("value", function (snap) {
-        S.settled = snap.val() || {}; S.ready.s = true; render();
-      }, onErr);
+      S.auth.onAuthStateChanged(onUser);
     } catch (e) {
-      S.err = "Could not connect to the database. Check the address you pasted into the file."; S.ready = { g: true, e: true, s: true }; render();
+      S.err = "Could not connect to Firebase. Check the config at the top of this file."; render();
     }
   }
   render();
