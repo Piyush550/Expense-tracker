@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Expense Tracker</title>
+<script>try{if(localStorage.getItem("expense-tracker-theme")==="dark"){document.documentElement.setAttribute("data-theme","dark");}}catch(e){}</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header id="head"></header>
+  <div id="banner"></div>
+  <section id="auth"></section>
+  <section id="formWrap" hidden></section>
+  <div class="cols" id="cols" hidden>
+    <section class="sec" id="settle"></section>
+    <section class="sec" id="balances"></section>
+  </div>
+  <section class="sec" id="log"></section>
+  <section class="sec" id="groups"></section>
+  <section class="sec" id="account"></section>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
