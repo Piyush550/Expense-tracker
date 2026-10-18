@@ -16,6 +16,12 @@
       },
       "settled": {
         ".write": "auth != null && auth.token.email_verified == true"
+      },
+      "groups": {
+        "$gid": {
+          ".write": "auth != null && auth.token.email_verified == true",
+          ".validate": "newData.child('name').isString() && newData.child('name').val().length >= 1 && newData.child('name').val().length <= 40 && newData.hasChild('members')"
+        }
       }
     }
   }

@@ -176,6 +176,13 @@ img { max-width: 100%; }
 .claimbtn.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .acct { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .acct-links { display: inline-flex; gap: 16px; }
+.groupbtns { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 4px; }
+.btn.small.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent); }
+.grouplist { list-style: none; margin: 0; padding: 0; }
+.grouprow { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr) auto; gap: 8px 14px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line); }
+.grouprow:first-child { border-top: 0; }
+.grouprow strong { overflow-wrap: anywhere; }
+@media (max-width: 600px) { .grouprow { grid-template-columns: minmax(0, 1fr) auto; } .grouprow .x-with { grid-column: 1 / -1; grid-row: 2; } }
 @media (max-width: 460px) {
   .tools { width: 100%; flex-wrap: nowrap; }
   .monthnav { width: auto; flex: 1; min-width: 0; }
@@ -195,6 +202,7 @@ img { max-width: 100%; }
     <section class="sec" id="balances"></section>
   </div>
   <section class="sec" id="log"></section>
+  <section class="sec" id="groups"></section>
   <section class="sec" id="account"></section>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
@@ -340,13 +348,13 @@ function computeMonth(expenses, memberIds) {
   // phase: "loading" → "signedOut" | "unverified" | "ready"
   var S = {
     root: null, auth: null, user: null, phase: "loading", authMode: "signin", authKey: "", busy: false,
-    users: [], legacy: [], expenses: [], settled: {}, refs: [],
-    ready: { u: false, l: false, e: false, s: false },
-    month: ymNow(), editing: null, delId: null, claimId: null, nameOpen: false,
+    users: [], legacy: [], expenses: [], settled: {}, groups: [], refs: [],
+    ready: { u: false, l: false, e: false, s: false, g: false },
+    month: ymNow(), editing: null, delId: null, claimId: null, nameOpen: false, groupEdit: null, groupDelId: null,
     online: null, err: "", setup: false
   };
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
-  function allReady() { return S.ready.u && S.ready.l && S.ready.e && S.ready.s; }
+  function allReady() { return S.ready.u && S.ready.l && S.ready.e && S.ready.s && S.ready.g; }
 
   // People are verified accounts (S.users). S.legacy holds names from the old fixed group,
   // kept so past expenses still show a name until someone claims them.
@@ -629,7 +637,9 @@ function computeMonth(expenses, memberIds) {
     var rows = ms.map(function (e) {
       var ppl = (e.people || []);
       var everyone = all > 1 && ppl.length === all && S.users.every(function (u) { return ppl.indexOf(u.id) >= 0; });
+      var grp = everyone ? null : groupMatching(ppl);
       var withHtml = everyone ? '<span class="muted">Everyone (' + all + ")</span>" :
+        grp ? '<span class="muted" title="' + esc(ppl.map(mName).join(", ")) + '">' + esc(grp.name) + " (" + ppl.length + ")</span>" :
         ppl.map(function (id) { return '<span title="' + esc(mName(id)) + '">' + chip(id, true) + "</span>"; }).join("");
       var each = ppl.length ? Math.round(e.paise / ppl.length) : 0;
       var act = '<button type="button" class="btn small" data-act="edit" data-id="' + esc(e.id) + '">Edit</button>' +
@@ -655,16 +665,86 @@ function computeMonth(expenses, memberIds) {
       '<span class="acct-links"><button type="button" class="linkbtn" data-act="name-open">Change my name</button><button type="button" class="linkbtn" data-act="signout">Sign out</button></span></div>';
   }
 
+  /* ---------- groups: saved sets of people for quick picking ---------- */
+  // Members who still have an account, so a group never selects someone the form cannot show.
+  function groupPeople(g) { return g.members.filter(function (id) { return !!userById(id); }); }
+  function sameSet(a, b) { return a.length === b.length && a.every(function (id) { return b.indexOf(id) >= 0; }); }
+  function groupMatching(ids) {
+    for (var i = 0; i < S.groups.length; i++) { var gp = groupPeople(S.groups[i]); if (gp.length > 1 && sameSet(gp, ids)) return S.groups[i]; }
+    return null;
+  }
+
+  function renderGroups() {
+    var el = $("groups");
+    var head = '<div class="sechead"><h2>Groups</h2>' + (S.groupEdit ? "" : '<button type="button" class="btn small" data-act="group-new"' + (allReady() ? "" : " disabled") + ">+ New group</button>") + "</div>";
+    if (!allReady()) { el.innerHTML = ""; return; }
+    if (S.groupEdit) {
+      var g = S.groupEdit === "new" ? null : findIn(S.groups, S.groupEdit);
+      var sel = g ? g.members : [];
+      var picks = S.users.map(function (u) {
+        return '<label class="pick" title="' + esc(u.email) + '"><input type="checkbox" name="gperson" value="' + esc(u.id) + '"' + (sel.indexOf(u.id) >= 0 ? " checked" : "") + ">" + chip(u.id, true) + "<span>" + esc(u.name) + "</span></label>";
+      }).join("");
+      el.innerHTML = head + '<form class="card formcard" id="groupForm" novalidate><div class="sechead"><h2>' + (g ? "Edit group" : "New group") + "</h2></div>" +
+        '<div class="field" style="max-width:360px"><label for="g-name">Group name</label><input type="text" id="g-name" maxlength="40" placeholder="Boys Flat, Office, Goa trip…" value="' + esc(g ? g.name : "") + '" autocomplete="off"></div>' +
+        '<div class="field" style="margin-top:14px"><div class="legend">People in this group</div><div class="picks" role="group" aria-label="People in this group">' + picks + "</div></div>" +
+        '<div class="formfoot"><button type="submit" class="btn primary">' + (g ? "Save group" : "Create group") + '</button><button type="button" class="btn" data-act="group-cancel">Cancel</button><span class="err" id="g-err"></span></div></form>';
+      return;
+    }
+    if (!S.groups.length) {
+      el.innerHTML = head + '<div class="card muted">No groups yet. Make one, like "Boys Flat", to pick all its people in one click when adding an expense.</div>';
+      return;
+    }
+    var rows = S.groups.map(function (g) {
+      var gp = groupPeople(g);
+      var ppl = gp.length ? gp.map(function (id) { return '<span class="who" style="margin-right:10px">' + chip(id, true) + "<span>" + esc(mName(id)) + "</span></span>"; }).join("") : '<span class="muted">Nobody</span>';
+      var del = S.groupDelId === g.id;
+      return '<li class="grouprow"><strong>' + esc(g.name) + '</strong><div class="x-with">' + ppl + '</div><div class="x-act">' +
+        '<button type="button" class="btn small" data-act="group-edit" data-id="' + esc(g.id) + '">Edit</button>' +
+        '<button type="button" class="btn small danger' + (del ? " on" : "") + '" data-act="group-del" data-id="' + esc(g.id) + '">' + (del ? "Confirm delete" : "Delete") + "</button></div></li>";
+    }).join("");
+    el.innerHTML = head + '<div class="card" style="padding:0"><ul class="grouplist">' + rows + "</ul></div>" +
+      '<p class="note">Groups are shortcuts for the expense form. Anyone can edit them, and changing a group does not change past expenses.</p>';
+  }
+  function openGroupForm(id) {
+    S.groupEdit = id || "new"; S.groupDelId = null; renderGroups();
+    var f = $("groupForm"); if (f) { f.scrollIntoView({ block: "nearest" }); $("g-name").focus(); }
+  }
+  function closeGroupForm() { S.groupEdit = null; renderGroups(); }
+  function saveGroup() {
+    var name = $("g-name").value.trim().slice(0, 40), err = $("g-err");
+    var ids = Array.prototype.slice.call(document.querySelectorAll("#groupForm input[name=gperson]:checked")).map(function (i) { return i.value; });
+    var editId = S.groupEdit === "new" ? null : S.groupEdit;
+    if (!name) { err.textContent = "Give the group a name."; $("g-name").focus(); return; }
+    if (S.groups.some(function (g) { return g.id !== editId && g.name.toLowerCase() === name.toLowerCase(); })) { err.textContent = "There is already a group with this name."; return; }
+    if (ids.length < 2) { err.textContent = "Pick at least two people."; return; }
+    var old = editId ? findIn(S.groups, editId) : null;
+    var id = editId || S.root.child("groups").push().key;
+    var mm = {}; ids.forEach(function (p) { mm[p] = true; });
+    var now = Date.now();
+    S.root.child("groups/" + id).set({
+      name: name, members: mm,
+      createdAt: old && old.createdAt ? old.createdAt : now, createdBy: old && old.createdBy ? old.createdBy : uid(),
+      updatedAt: now, updatedBy: uid()
+    }).catch(function (e) { toast(errText(e)); });
+    S.groupEdit = null; renderGroups(); toast(editId ? "Group saved" : "Group created");
+  }
+  function deleteGroup(id) {
+    S.groupDelId = null;
+    S.root.child("groups/" + id).remove().catch(function (e) { toast(errText(e)); });
+    toast("Group deleted");
+  }
+
   function render() {
     renderHead(); renderBanner(); renderAuth();
     var ready = S.phase === "ready";
     $("cols").hidden = !ready;
     if (!ready) {
-      $("settle").innerHTML = $("balances").innerHTML = $("log").innerHTML = $("account").innerHTML = "";
+      $("settle").innerHTML = $("balances").innerHTML = $("log").innerHTML = $("groups").innerHTML = $("account").innerHTML = "";
       if (S.editing !== null || !$("formWrap").hidden) closeForm();
       return;
     }
     renderSettle(); renderBalances(); renderLog();
+    if (!S.groupEdit) renderGroups();
     if (!S.nameOpen) renderAccount();
   }
 
@@ -682,6 +762,9 @@ function computeMonth(expenses, memberIds) {
     var picks = list.map(function (m) {
       return '<label class="pick"' + (m.email ? ' title="' + esc(m.email) + '"' : "") + '><input type="checkbox" name="person" value="' + esc(m.id) + '"' + (people.indexOf(m.id) >= 0 ? " checked" : "") + ">" + chip(m.id, true) + "<span>" + esc(m.name) + "</span></label>";
     }).join("");
+    var groupBtns = S.groups.length ? '<div class="groupbtns" role="group" aria-label="Pick a group"><span class="lbl">Groups</span>' + S.groups.map(function (g) {
+      return '<button type="button" class="btn small" data-act="pick-group" data-id="' + esc(g.id) + '" title="' + esc(groupPeople(g).map(mName).join(", ")) + '">' + esc(g.name) + "</button>";
+    }).join("") + "</div>" : "";
     var amtVal = e ? String(e.paise / 100) : "";
     var w = $("formWrap");
     w.innerHTML = '<form class="card formcard" id="expForm" novalidate><div class="sechead"><h2>' + (e ? "Edit expense" : "New expense") + "</h2></div>" +
@@ -690,7 +773,7 @@ function computeMonth(expenses, memberIds) {
       '<div class="field name"><label for="f-name">Name of the expense</label><input type="text" id="f-name" maxlength="80" placeholder="Dinner at Social, cab to airport…" value="' + esc(e ? e.name : "") + '" autocomplete="off" required></div>' +
       '<div class="field"><label for="f-amt">Amount</label><div class="amtwrap"><span>₹</span><input type="text" id="f-amt" inputmode="decimal" placeholder="0" value="' + esc(amtVal) + '" autocomplete="off" required></div></div>' +
       '<div class="field"><label for="f-payer">Paid by</label><select id="f-payer">' + payOpts + "</select></div>" +
-      '<div class="field full"><div class="legend">People involved <span class="quick">· <button type="button" class="linkbtn" data-act="pick-all">everyone</button> · <button type="button" class="linkbtn" data-act="pick-none">clear</button></span></div><div class="picks" role="group" aria-label="People involved">' + picks + "</div></div>" +
+      '<div class="field full"><div class="legend">People involved <span class="quick">· <button type="button" class="linkbtn" data-act="pick-all">everyone</button> · <button type="button" class="linkbtn" data-act="pick-none">clear</button></span></div>' + groupBtns + '<div class="picks" role="group" aria-label="People involved">' + picks + "</div></div>" +
       '<div class="field full"><label for="f-rem">Remarks</label><textarea id="f-rem" rows="2" maxlength="200" placeholder="Optional. Who ordered extra, what the bill included…">' + esc(e ? e.remarks || "" : "") + "</textarea></div></div>" +
       '<div class="formfoot"><button type="submit" class="btn primary" id="f-save">' + (e ? "Save changes" : "Add expense") + '</button><button type="button" class="btn" data-act="form-cancel">Cancel</button><span class="grow" id="f-note"></span></div><div class="err" id="f-err" style="margin-top:8px"></div></form>';
     w.hidden = false; updateSplitNote();
@@ -708,7 +791,14 @@ function computeMonth(expenses, memberIds) {
   }
   function updateSplitNote() {
     var n = $("f-note"); if (!n) return;
-    var p = parseAmount($("f-amt").value), c = checkedPeople().length;
+    var sel = checkedPeople();
+    // Highlight the group whose people are exactly the current selection.
+    Array.prototype.forEach.call(document.querySelectorAll("#formWrap [data-act=pick-group]"), function (b) {
+      var g = findIn(S.groups, b.getAttribute("data-id"));
+      var on = !!g && sameSet(groupPeople(g), sel);
+      b.classList.toggle("on", on); b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    var p = parseAmount($("f-amt").value), c = sel.length;
     if (!c) n.textContent = "Pick at least one person to split between.";
     else if (!p) n.textContent = c + (c === 1 ? " person" : " people") + " selected.";
     else n.textContent = "Split equally: about " + money(Math.round(p / c)) + " each between " + c + (c === 1 ? " person." : " people.");
@@ -816,10 +906,16 @@ function computeMonth(expenses, memberIds) {
   }
 
   document.addEventListener("click", function (ev) {
-    var b = ev.target.closest("[data-act]"); if (!b) { if (S.delId) { S.delId = null; renderLog(); } return; }
+    var b = ev.target.closest("[data-act]");
+    if (!b) {
+      if (S.delId) { S.delId = null; renderLog(); }
+      if (S.groupDelId) { S.groupDelId = null; renderGroups(); }
+      return;
+    }
     var act = b.getAttribute("data-act");
     if (act !== "del" && S.delId) { S.delId = null; renderLog(); }
     if (act !== "claim" && S.claimId) { S.claimId = null; renderBanner(); }
+    if (act !== "group-del" && S.groupDelId) { S.groupDelId = null; renderGroups(); }
     switch (act) {
       case "theme": setTheme(currentTheme() === "dark" ? "light" : "dark"); break;
       case "prev": S.month = shiftMonth(S.month, -1); render(); break;
@@ -856,6 +952,19 @@ function computeMonth(expenses, memberIds) {
       case "claim-skip": skipClaim(); break;
       case "name-open": S.nameOpen = true; renderAccount(); $("n-name").focus(); break;
       case "name-close": S.nameOpen = false; renderAccount(); break;
+      case "pick-group": {
+        var pg = findIn(S.groups, b.getAttribute("data-id"));
+        if (pg) { var gp = groupPeople(pg); Array.prototype.forEach.call(document.querySelectorAll("#formWrap input[name=person]"), function (i) { i.checked = gp.indexOf(i.value) >= 0; }); }
+        updateSplitNote(); break;
+      }
+      case "group-new": openGroupForm(null); break;
+      case "group-edit": openGroupForm(b.getAttribute("data-id")); break;
+      case "group-cancel": closeGroupForm(); break;
+      case "group-del": {
+        var gid = b.getAttribute("data-id");
+        if (S.groupDelId === gid) deleteGroup(gid); else { S.groupDelId = gid; renderGroups(); }
+        break;
+      }
     }
   });
   document.addEventListener("change", function (ev) {
@@ -869,6 +978,7 @@ function computeMonth(expenses, memberIds) {
     var f = ev.target;
     if (f.id === "expForm") saveExpense();
     else if (f.id === "nameForm") saveName();
+    else if (f.id === "groupForm") saveGroup();
     else if (f.id === "authForm" && !S.busy) {
       var mode = f.getAttribute("data-mode");
       if (mode === "signup") signUp(); else if (mode === "reset") resetPassword(); else signIn();
@@ -882,12 +992,13 @@ function computeMonth(expenses, memberIds) {
     S.err = /permission/i.test((e && (e.code || e.message)) || "")
       ? "The database refused to share its data. Publish the rules from database.rules.json under Realtime Database → Rules in the Firebase console."
       : "Could not load the ledger right now. Reload the page to try again.";
-    S.ready = { u: true, l: true, e: true, s: true }; render();
+    S.ready = { u: true, l: true, e: true, s: true, g: true }; render();
   }
   function detachData() {
     S.refs.forEach(function (r) { r.off(); });
-    S.refs = []; S.users = []; S.legacy = []; S.expenses = []; S.settled = {};
-    S.ready = { u: false, l: false, e: false, s: false };
+    S.refs = []; S.users = []; S.legacy = []; S.expenses = []; S.settled = {}; S.groups = [];
+    S.ready = { u: false, l: false, e: false, s: false, g: false };
+    S.groupEdit = null; S.groupDelId = null;
     S.err = "";
   }
   function attachData(u) {
@@ -912,6 +1023,14 @@ function computeMonth(expenses, memberIds) {
         return { id: id, date: x.date, name: x.name, paise: x.paise, payer: x.payer, people: Object.keys(x.people || {}), remarks: x.remarks || "", createdAt: x.createdAt || 0, createdBy: x.createdBy || "" };
       });
       S.ready.e = true; render();
+    });
+    listen("groups", function (snap) {
+      var v = snap.val() || {};
+      S.groups = Object.keys(v).map(function (id) {
+        var x = v[id] || {};
+        return { id: id, name: String(x.name || "Unnamed group"), members: Object.keys(x.members || {}), createdAt: x.createdAt || 0, createdBy: x.createdBy || "" };
+      }).sort(byName);
+      S.ready.g = true; render();
     });
     listen("settled", function (snap) {
       S.settled = snap.val() || {}; S.ready.s = true; render();
