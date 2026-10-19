@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.netlify/
+.local-db/
+*.local
+.env
+.env.*
+!.env.offline
+firebase-export*.json
+coverage/
+firebase-debug.log

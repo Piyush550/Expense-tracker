@@ -1,3 +1,43 @@
-# Netlify serves only the static frontend. No build step.
+# One site: the Vite app is published from dist/, the API is the function in
+# netlify/functions/api.ts (it claims /api/* itself), and Netlify Database applies
+# netlify/database/migrations/ before every deploy is published.
 [build]
-  publish = "frontend"
+  # Type-check and run the test suite before every deploy; a failure blocks the publish.
+  command = "npm run ci"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[functions]
+  node_bundler = "esbuild"
+  # pg and ws load Node built-ins with require(); bundled into an ES module that fails at
+  # runtime, so they ship as regular node_modules instead.
+  external_node_modules = ["@netlify/database", "pg", "ws", "@neondatabase/serverless"]
+
+[dev]
+  command = "vite"
+  targetPort = 5173
+
+# Single-page app: unknown paths load the app shell. /api/* never reaches this
+# rule because the function claims that path first.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    # Firebase Auth needs apis.google.com (popup helper script) and the auth domain (its iframe).
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://apis.google.com; frame-src https://expense-tracker-d9d44.firebaseapp.com https://accounts.google.com; img-src 'self' data:; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

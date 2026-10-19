@@ -1,0 +1,8 @@
+{
+  "rules": {
+    "ledger": {
+      ".read": "auth != null && auth.token.email_verified == true",
+      ".write": false
+    }
+  }
+}
