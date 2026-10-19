@@ -1,0 +1,70 @@
+import { useState, type FormEvent } from "react";
+import type { GroupDetail, SettlementInput } from "../../shared/api";
+import { isRealDate, todayIso } from "../../shared/dates";
+import { paiseToInput, parseMoney } from "../../shared/money";
+import { api, errorMessage } from "../lib/api";
+import { useGroupMutation } from "../lib/queries";
+import { useToast } from "../lib/toast";
+
+export interface PaymentDraft {
+  fromUserId: string;
+  toUserId: string;
+  amountPaise?: number;
+}
+
+export function PaymentForm({ group, meId, draft, onDone }: { group: GroupDetail; meId: string; draft: PaymentDraft; onDone(): void }) {
+  const toast = useToast();
+  const [id] = useState(() => crypto.randomUUID());
+  const active = group.members.filter((m) => m.active);
+  const [from, setFrom] = useState(draft.fromUserId);
+  const [to, setTo] = useState(draft.toUserId);
+  const [amountText, setAmountText] = useState(draft.amountPaise ? paiseToInput(draft.amountPaise) : "");
+  const [paidOn, setPaidOn] = useState(todayIso());
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+  const save = useGroupMutation(group.id, (input: SettlementInput) => api.createSettlement(group.id, id, input));
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (save.isPending) return;
+    const amount = parseMoney(amountText);
+    if (from === to) return setError("Pick two different people.");
+    if (!amount) return setError("Enter the amount that was paid.");
+    if (!isRealDate(paidOn)) return setError("Choose the date of the payment.");
+    setError("");
+    save.mutate(
+      { fromUserId: from, toUserId: to, amountPaise: amount, paidOn, note: note.trim() },
+      { onSuccess: () => { toast("Payment recorded"); onDone(); }, onError: (err) => setError(errorMessage(err)) },
+    );
+  };
+
+  const select = (id: string, value: string, set: (v: string) => void) => (
+    <select id={id} value={value} onChange={(e) => set(e.target.value)}>
+      {active.map((m) => (
+        <option key={m.id} value={m.id}>{m.name}{m.id === meId ? " (you)" : ""}</option>
+      ))}
+    </select>
+  );
+
+  return (
+    <form className="card formcard" onSubmit={submit} noValidate>
+      <div className="sechead"><h2>Record a payment</h2></div>
+      <div className="formgrid">
+        <div className="field"><label htmlFor="p-from">Who paid</label>{select("p-from", from, setFrom)}</div>
+        <div className="field"><label htmlFor="p-to">Paid to</label>{select("p-to", to, setTo)}</div>
+        <div className="field">
+          <label htmlFor="p-amt">Amount</label>
+          <div className="amtwrap"><span>₹</span><input id="p-amt" type="text" inputMode="decimal" value={amountText} onChange={(e) => setAmountText(e.target.value)} autoComplete="off" /></div>
+        </div>
+        <div className="field"><label htmlFor="p-date">Date</label><input id="p-date" type="date" value={paidOn} onChange={(e) => setPaidOn(e.target.value)} /></div>
+        <div className="field full"><label htmlFor="p-note">Note</label><input id="p-note" type="text" maxLength={200} placeholder="Optional. UPI, cash…" value={note} onChange={(e) => setNote(e.target.value)} /></div>
+      </div>
+      <div className="formfoot">
+        <button type="submit" className="btn primary" disabled={save.isPending}>Record payment</button>
+        <button type="button" className="btn" onClick={onDone}>Cancel</button>
+        <span className="grow">Record it after the money has actually moved. A partial amount is fine.</span>
+      </div>
+      <div className="err" role="alert" style={{ marginTop: 8 }}>{error}</div>
+    </form>
+  );
+}
