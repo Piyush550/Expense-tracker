@@ -37,9 +37,9 @@ export function SpaceView({ space, updatedAt, me, tab, onTab, month, onMonth, on
     <PeopleContext.Provider value={people}>
       <div className="spacehead">
         <div>
-          <h2 className="spacetitle">{space.name}</h2>
+          <h1 className="spacetitle">{space.name}<span className="kindtag">{recurring ? "Monthly" : "One-time"}</span></h1>
           <p className="sub">
-            {recurring ? "Recurring · settled month by month" : "One-time · settled once"} · {active} {active === 1 ? "member" : "members"}
+            {active} {active === 1 ? "member" : "members"} · {recurring ? "settled month by month" : "settled once, over everything"}
             {space.myRole === "owner" ? " · you own this space" : ""}
           </p>
         </div>

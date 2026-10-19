@@ -63,6 +63,11 @@ const expenseFields = {
 };
 
 export const createExpense = z.strictObject({ id, ...expenseFields });
+export type CreateExpense = z.output<typeof createExpense>;
+
+export const bulkExpenses = z
+  .strictObject({ expenses: z.array(createExpense).min(1).max(50) })
+  .refine((v) => new Set(v.expenses.map((e) => e.id)).size === v.expenses.length, "Each row needs its own id.");
 export const updateExpense = z.strictObject({ version: z.number().int().positive(), ...expenseFields });
 
 export const createSettlement = z

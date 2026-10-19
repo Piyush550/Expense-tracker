@@ -74,6 +74,9 @@ export const api = {
 
   expenses: (spaceId: string, month?: string) => request<Expense[]>("GET", `/spaces/${spaceId}/expenses${q(month)}`),
   createExpense: (spaceId: string, id: string, input: ExpenseInput) => request<Expense>("POST", `/spaces/${spaceId}/expenses`, { id, ...input }),
+  /** Saves all of them or none (one transaction). A failing row is named in the error's details.index. */
+  bulkCreateExpenses: (spaceId: string, expenses: (ExpenseInput & { id: string })[]) =>
+    request<{ expenses: Expense[] }>("POST", `/spaces/${spaceId}/expenses/bulk`, { expenses }),
   updateExpense: (id: string, version: number, input: ExpenseInput) => request<Expense>("PATCH", `/expenses/${id}`, { version, ...input }),
   deleteExpense: (id: string) => request<void>("DELETE", `/expenses/${id}`),
 

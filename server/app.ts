@@ -2,10 +2,10 @@
 // space-scoped route checks membership before touching data.
 import { Hono, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import type { Balances, Expense, Group, MonthSummary, Person, Settlement, SpaceDetail } from "../shared/api";
+import type { Balances, Expense, Group, Me, MonthSummary, Person, Settlement, SpaceDetail } from "../shared/api";
 import { activeMemberIds, assertUuid, requireMember, requireOwner } from "./access";
 import type { VerifyToken } from "./auth";
-import { pgCode, type Db } from "./db";
+import { pgCode, type Db, type Queryable } from "./db";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "./errors";
 import { findExpense, getSettlement, listExpenses, listSettlements, replaceShares, sharesFor } from "./expenses";
 import { findGroup, listGroups, requireGroupOwner, setGroupMembers } from "./groups";
@@ -14,6 +14,7 @@ import { type Ctx, type Env, parse, readBody } from "./http";
 import { memberNet, monthlySummary, spaceBalances } from "./ledger";
 import { listContacts, requireContacts } from "./people";
 import * as s from "./schemas";
+import type { CreateExpense } from "./schemas";
 import { mergeUsers, resolveUser } from "./users";
 
 export interface AppDeps {
@@ -250,29 +251,59 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     return c.json<Expense[]>(await listExpenses(c.var.db, c.req.param("id"), month));
   });
 
+  // Creates one expense inside the caller's transaction. A repeated id (a retried request)
+  // returns what was stored and never overwrites it.
+  const createOne = async (tx: Queryable, spaceId: string, me: Me, body: CreateExpense, allowed: Set<string>) => {
+    const shares = sharesFor(body.amountPaise, body.splitType, body.splits, body.id, body.payerId, allowed);
+    const inserted = await tx.query(
+      `INSERT INTO expenses (id, space_id, description, amount_paise, payer_id, split_type, spent_on, remarks, created_by, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+       ON CONFLICT (id) DO NOTHING RETURNING id`,
+      [body.id, spaceId, body.description, body.amountPaise, body.payerId, body.splitType, body.spentOn, body.remarks, me.id],
+    );
+    if (!inserted.rows.length) {
+      const existing = await findExpense(tx, body.id, me.id);
+      if (existing && existing.spaceId === spaceId && existing.createdBy === me.id) return { expense: existing, created: false };
+      throw conflict("id_taken", "That expense id is already used.");
+    }
+    await replaceShares(tx, body.id, shares);
+    return { expense: (await findExpense(tx, body.id, me.id))!, created: true };
+  };
+
   app.post("/spaces/:id/expenses", async (c) => {
     const spaceId = c.req.param("id");
     const body = await readBody(c, s.createExpense);
     const me = c.var.user;
     const result = await c.var.db.transaction(async (tx) => {
       await requireMember(tx, spaceId, me.id);
-      const shares = sharesFor(body.amountPaise, body.splitType, body.splits, body.id, body.payerId, await activeMemberIds(tx, spaceId));
-      const inserted = await tx.query(
-        `INSERT INTO expenses (id, space_id, description, amount_paise, payer_id, split_type, spent_on, remarks, created_by, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
-         ON CONFLICT (id) DO NOTHING RETURNING id`,
-        [body.id, spaceId, body.description, body.amountPaise, body.payerId, body.splitType, body.spentOn, body.remarks, me.id],
-      );
-      if (!inserted.rows.length) {
-        // Same id again: a retried request. Return what was stored; never overwrite.
-        const existing = await findExpense(tx, body.id, me.id);
-        if (existing && existing.spaceId === spaceId && existing.createdBy === me.id) return { expense: existing, created: false };
-        throw conflict("id_taken", "That expense id is already used.");
-      }
-      await replaceShares(tx, body.id, shares);
-      return { expense: (await findExpense(tx, body.id, me.id))!, created: true };
+      return createOne(tx, spaceId, me, body, await activeMemberIds(tx, spaceId));
     });
     return c.json(result.expense, result.created ? 201 : 200);
+  });
+
+  // Bulk add: every expense is saved, or none is. A problem in any row is reported with its
+  // index so the app can point at that row.
+  app.post("/spaces/:id/expenses/bulk", async (c) => {
+    const spaceId = c.req.param("id");
+    const { expenses } = await readBody(c, s.bulkExpenses);
+    const me = c.var.user;
+    const saved = await c.var.db.transaction(async (tx) => {
+      await requireMember(tx, spaceId, me.id);
+      const allowed = await activeMemberIds(tx, spaceId);
+      const out: Expense[] = [];
+      for (const [index, body] of expenses.entries()) {
+        try {
+          out.push((await createOne(tx, spaceId, me, body, allowed)).expense);
+        } catch (err) {
+          if (err instanceof HttpError) {
+            throw new HttpError(err.status, err.code, `Row ${index + 1}: ${err.message}`, { index });
+          }
+          throw err;
+        }
+      }
+      return out;
+    });
+    return c.json<{ expenses: Expense[] }>({ expenses: saved }, 201);
   });
 
   app.patch("/expenses/:id", async (c) => {

@@ -21,7 +21,7 @@ export function ExpenseList({ space, meId, expenses, onEdit }: {
   const activeIds = space.members.filter((m) => m.active).map((m) => m.id);
 
   return (
-    <div className="card" style={{ padding: 0 }}>
+    <div className="card logcard">
       <ul className="log">
         {expenses.map((e) => {
           const ids = e.shares.map((s) => s.userId);

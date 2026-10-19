@@ -430,3 +430,41 @@ describe("people you know", () => {
     expect((await api.call<Person[]>(dev, "GET", "/people")).body.map((p) => p.name).sort()).toEqual(["asha", "chen"]);
   });
 });
+
+describe("bulk add", () => {
+  it("saves every row in one go, all or nothing, and is safe to retry", async () => {
+    const g = await makeSpace();
+    const ashaId = (await me()).id;
+    const balaId = idOf(g, bala.email);
+    const devId = (await me(dev)).id;
+    const row = (description: string, amountPaise: number, payerId = ashaId) => ({
+      id: newId(), description, amountPaise, payerId, splitType: "equal", spentOn: "2026-10-18",
+      splits: [{ userId: ashaId }, { userId: balaId }],
+    });
+
+    // One bad row (Dev is not in the space) stops the whole batch and names the row.
+    const bad = await api.call<{ error: { message: string; details: { index: number } } }>(asha, "POST", `/spaces/${g.id}/expenses/bulk`, {
+      expenses: [row("Milk", 6000), row("Bread", 4000, devId), row("Eggs", 9000)],
+    });
+    expect(bad.status).toBe(422);
+    expect(bad.body.error.details).toEqual({ index: 1 });
+    expect(bad.body.error.message).toMatch(/^Row 2:/);
+    expect((await api.call<Expense[]>(asha, "GET", `/spaces/${g.id}/expenses`)).body).toHaveLength(0);
+
+    const batch = { expenses: [row("Milk", 6000), row("Bread", 4000, balaId), row("Eggs", 9000)] };
+    const ok = await api.call<{ expenses: Expense[] }>(asha, "POST", `/spaces/${g.id}/expenses/bulk`, batch);
+    expect(ok.status).toBe(201);
+    expect(ok.body.expenses.map((e) => e.description)).toEqual(["Milk", "Bread", "Eggs"]);
+    expect((await balances(g.id)).transfers).toEqual([{ from: balaId, to: ashaId, amountPaise: 5500 }]);
+
+    // The same request again (e.g. the network dropped the reply) adds nothing new.
+    expect((await api.call(asha, "POST", `/spaces/${g.id}/expenses/bulk`, batch)).status).toBe(201);
+    expect((await api.call<Expense[]>(asha, "GET", `/spaces/${g.id}/expenses`)).body).toHaveLength(3);
+
+    // Input checks still apply per row, and outsiders cannot use it.
+    const invalid = await api.call(asha, "POST", `/spaces/${g.id}/expenses/bulk`, { expenses: [{ ...row("x", 100), amountPaise: -1 }] });
+    expect(invalid.status).toBe(422);
+    expect((await api.call(dev, "POST", `/spaces/${g.id}/expenses/bulk`, batch)).status).toBe(404);
+    expect((await api.call(asha, "POST", `/spaces/${g.id}/expenses/bulk`, { expenses: [] })).status).toBe(422);
+  });
+});
