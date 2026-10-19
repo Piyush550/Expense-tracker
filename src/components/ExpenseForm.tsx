@@ -4,7 +4,8 @@ import { isRealDate } from "../../shared/dates";
 import { formatMoney, paiseToInput, parseMoney } from "../../shared/money";
 import { computeShares, PERCENT_TOTAL, SplitError, type SplitInput, type SplitType } from "../../shared/split";
 import { api, ApiError, errorMessage } from "../lib/api";
-import { useGroups, useSpaceMutation } from "../lib/queries";
+import { noteMonth, useGroups, useSpaceMutation } from "../lib/queries";
+import { DateField } from "./DateField";
 import { useToast } from "../lib/toast";
 import { Chip } from "./People";
 
@@ -35,11 +36,13 @@ function valueToText(type: SplitType, v: number | null): string {
   return String(v);
 }
 
-export function ExpenseForm({ space, meId, expense, defaultDate, onDone }: {
+export function ExpenseForm({ space, meId, expense, defaultDate, month, onDone }: {
   space: SpaceDetail;
   meId: string;
   expense: Expense | null;
   defaultDate: string;
+  /** The month being viewed (recurring spaces): a typed bare day lands in it. */
+  month: string | null;
   onDone(): void;
 }) {
   const toast = useToast();
@@ -114,8 +117,11 @@ export function ExpenseForm({ space, meId, expense, defaultDate, onDone }: {
     setSplitType(next);
   };
 
-  const save = useSpaceMutation(space.id, (input: ExpenseInput) =>
-    expense ? api.updateExpense(expense.id, expense.version, input) : api.createExpense(space.id, id, input),
+  const save = useSpaceMutation(
+    space.id,
+    (input: ExpenseInput) => (expense ? api.updateExpense(expense.id, expense.version, input) : api.createExpense(space.id, id, input)),
+    ["expenses", "balances", "months", "spaces"],
+    (saved) => noteMonth(space.id, saved.spentOn.slice(0, 7)),
   );
   const pickGroup = (ids: string[]) => switchType(splitType, ids);
   const sameSet = (ids: string[]) => {
@@ -171,10 +177,7 @@ export function ExpenseForm({ space, meId, expense, defaultDate, onDone }: {
     <form className="card formcard" onSubmit={submit} noValidate>
       <div className="sechead"><h2>{expense ? "Edit expense" : "New expense"}</h2></div>
       <div className="formgrid">
-        <div className="field">
-          <label htmlFor="f-date">Date</label>
-          <input id="f-date" type="date" value={spentOn} onChange={(e) => setSpentOn(e.target.value)} required />
-        </div>
+        <DateField label="Date" value={spentOn} onChange={setSpentOn} month={month} />
         <div className="field name">
           <label htmlFor="f-name">Name of the expense</label>
           <input id="f-name" type="text" maxLength={100} placeholder="Dinner at Social, cab to airport…" value={description} onChange={(e) => setDescription(e.target.value)} autoComplete="off" autoFocus />

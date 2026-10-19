@@ -1,30 +1,30 @@
 import { useState, type FormEvent } from "react";
 import type { Group } from "../../shared/api";
 import { api, errorMessage } from "../lib/api";
-import { useGroupMutation, useGroups } from "../lib/queries";
+import { useGroups, useSpaceMutation } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { ConfirmButton } from "./ConfirmButton";
-import { parseEmails } from "./emails";
+import { PeoplePicker } from "./PeoplePicker";
 
-function GroupForm({ group, meEmail, onDone }: { group: Group | null; meEmail: string; onDone(): void }) {
+function GroupForm({ group, meId, onDone }: { group: Group | null; meId: string; onDone(): void }) {
   const toast = useToast();
   const [name, setName] = useState(group?.name ?? "");
-  const [emails, setEmails] = useState(
-    group ? group.members.map((m) => m.email).filter((e): e is string => !!e && e !== meEmail).join(", ") : "",
-  );
+  const [ids, setIds] = useState<string[]>(group ? group.members.map((m) => m.id).filter((id) => id !== meId) : []);
+  const [emails, setEmails] = useState<string[]>([]);
   const [error, setError] = useState("");
-  const save = useGroupMutation((v: { name: string; emails: string[] }) =>
-    group ? api.updateGroup(group.id, { name: v.name, memberEmails: v.emails }) : api.createGroup(v.name, v.emails),
+  const save = useSpaceMutation(
+    null,
+    (v: { name: string }) =>
+      group ? api.updateGroup(group.id, { name: v.name, memberIds: ids, memberEmails: emails }) : api.createGroup(v.name, ids, emails),
+    ["groups", "people"],
   );
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const n = name.trim();
     if (!n) return setError("Give the group a name.");
-    const parsed = parseEmails(emails);
-    if (parsed.bad) return setError(`"${parsed.bad}" is not an email address.`);
     setError("");
-    save.mutate({ name: n, emails: parsed.emails }, {
+    save.mutate({ name: n }, {
       onSuccess: () => { toast(group ? "Group saved" : "Group created"); onDone(); },
       onError: (err) => setError(errorMessage(err)),
     });
@@ -37,9 +37,8 @@ function GroupForm({ group, meEmail, onDone }: { group: Group | null; meEmail: s
         <label htmlFor="gr-name">Group name</label>
         <input id="gr-name" type="text" maxLength={60} placeholder="Boys Flat, Office lunch…" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
       </div>
-      <div className="field" style={{ marginTop: 14 }}>
-        <label htmlFor="gr-emails">People in it (emails). You are always included.</label>
-        <textarea id="gr-emails" rows={2} placeholder="ishan@gmail.com, piyush@gmail.com" value={emails} onChange={(e) => setEmails(e.target.value)} />
+      <div style={{ marginTop: 14 }}>
+        <PeoplePicker legend="People in it (you are always included)" ids={ids} onIds={setIds} emails={emails} onEmails={setEmails} />
       </div>
       <div className="formfoot">
         <button type="submit" className="btn primary" disabled={save.isPending}>{group ? "Save group" : "Create group"}</button>
@@ -50,11 +49,11 @@ function GroupForm({ group, meEmail, onDone }: { group: Group | null; meEmail: s
   );
 }
 
-export function GroupsPage({ meEmail }: { meEmail: string }) {
+export function GroupsPage({ meId }: { meId: string }) {
   const toast = useToast();
   const groups = useGroups();
   const [editing, setEditing] = useState<Group | "new" | null>(null);
-  const remove = useGroupMutation((id: string) => api.deleteGroup(id));
+  const remove = useSpaceMutation(null, (id: string) => api.deleteGroup(id), ["groups", "people"]);
 
   return (
     <section className="sec">
@@ -66,7 +65,7 @@ export function GroupsPage({ meEmail }: { meEmail: string }) {
         A group is a saved list of people, like "Boys Flat". Use it in any space: add all its people to a space in one go,
         or pick them in one click when adding an expense. Everyone in a group can use it; only the person who made it can change it.
       </p>
-      {editing && <GroupForm key={editing === "new" ? "new" : editing.id} group={editing === "new" ? null : editing} meEmail={meEmail} onDone={() => setEditing(null)} />}
+      {editing && <GroupForm key={editing === "new" ? "new" : editing.id} group={editing === "new" ? null : editing} meId={meId} onDone={() => setEditing(null)} />}
       {groups.isPending ? (
         <div className="card muted">Loading…</div>
       ) : groups.error ? (

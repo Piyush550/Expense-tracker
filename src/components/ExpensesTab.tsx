@@ -1,13 +1,15 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import type { Expense, Me, SpaceDetail } from "../../shared/api";
-import { currentMonth, monthLabel, todayIso } from "../../shared/dates";
+import { currentMonth, dateLabel, isRealDate, monthLabel, todayIso } from "../../shared/dates";
 import { formatMoney } from "../../shared/money";
 import { api, errorMessage } from "../lib/api";
 import { downloadCsv } from "../lib/export";
 import { keys, useExpenses, useSettlements } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { BulkAdd } from "./BulkAdd";
 import { ExpenseForm } from "./ExpenseForm";
+import { clearDraft, loadDraft, rowHasContent } from "../lib/drafts";
 import { ExpenseList, PaymentList } from "./ExpenseList";
 import { useName } from "./People";
 
@@ -18,7 +20,16 @@ export function ExpensesTab({ space, me, month }: { space: SpaceDetail; me: Me; 
   const period = month ?? undefined;
   const expenses = useExpenses(space.id, period);
   const payments = useSettlements(space.id, period);
-  const [editing, setEditing] = useState<Expense | "new" | null>(null);
+  const [editing, setEditing] = useState<Expense | "new" | "bulk" | null>(null);
+  const [, rerender] = useState(0);
+  // A bulk-add draft left on this device for this space.
+  const draft = editing === "bulk" ? null : loadDraft(me.id, space.id);
+  const draftRows = draft?.rows.filter(rowHasContent).length ?? 0;
+  const defaultDate = !month || month === currentMonth() ? todayIso() : `${month}-01`;
+  const open = (next: Expense | "new" | "bulk") => {
+    setEditing(next);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   const [search, setSearch] = useState("");
   const [paidBy, setPaidBy] = useState("");
   const [involving, setInvolving] = useState("");
@@ -61,16 +72,31 @@ export function ExpensesTab({ space, me, month }: { space: SpaceDetail; me: Me; 
         <div><dt>Your share</dt><dd>{formatMoney(myShare)}</dd></div>
       </dl>
 
-      {editing && (
+      {draftRows > 0 && !editing && (
+        <div className="draftbanner">
+          <span>
+            <strong>Unsaved draft:</strong> {draftRows} {draftRows === 1 ? "expense" : "expenses"} for {draft && formatDraftDate(draft.date)}, kept on this device.
+          </span>
+          <span className="headbtns">
+            <button type="button" className="btn primary small" onClick={() => open("bulk")}>Continue</button>
+            <button type="button" className="btn small" onClick={() => { clearDraft(me.id, space.id); toast("Draft discarded"); rerender((n) => n + 1); }}>Discard</button>
+          </span>
+        </div>
+      )}
+
+      {editing === "bulk" ? (
+        <BulkAdd space={space} meId={me.id} defaultDate={defaultDate} month={month} onDone={() => setEditing(null)} />
+      ) : editing ? (
         <ExpenseForm
           key={editing === "new" ? "new" : editing.id}
           space={space}
           meId={me.id}
           expense={editing === "new" ? null : editing}
-          defaultDate={!month || month === currentMonth() ? todayIso() : `${month}-01`}
+          defaultDate={defaultDate}
+          month={month}
           onDone={() => setEditing(null)}
         />
-      )}
+      ) : null}
 
       <section className="sec">
         <div className="sechead">
@@ -78,7 +104,8 @@ export function ExpensesTab({ space, me, month }: { space: SpaceDetail; me: Me; 
           <div className="headbtns">
             <button type="button" className="btn small" onClick={() => exportCsv(false)}>Download {month ? "month" : "all"} (CSV)</button>
             {month && <button type="button" className="btn small" onClick={() => exportCsv(true)}>Download everything (CSV)</button>}
-            <button type="button" className="btn primary" onClick={() => { setEditing("new"); window.scrollTo({ top: 0, behavior: "smooth" }); }}>+ Add expense</button>
+            <button type="button" className="btn" onClick={() => open("bulk")}>Add several</button>
+            <button type="button" className="btn primary" onClick={() => open("new")}>+ Add expense</button>
           </div>
         </div>
         <div className="filters" role="search">
@@ -102,7 +129,7 @@ export function ExpensesTab({ space, me, month }: { space: SpaceDetail; me: Me; 
             {filtering ? "No expenses match these filters." : `Nothing logged ${month ? `for ${monthLabel(month)}` : "yet"}. Whoever paid can add it with the button above.`}
           </div>
         ) : (
-          <ExpenseList space={space} meId={me.id} expenses={filtered} onEdit={(e) => { setEditing(e); window.scrollTo({ top: 0, behavior: "smooth" }); }} />
+          <ExpenseList space={space} meId={me.id} expenses={filtered} onEdit={open} />
         )}
         {filtering && expenses.data && <p className="note">Showing {filtered.length} of {expenses.data.length} expenses ({periodName}).</p>}
       </section>
@@ -110,4 +137,8 @@ export function ExpensesTab({ space, me, month }: { space: SpaceDetail; me: Me; 
       <PaymentList space={space} meId={me.id} payments={payments.data} title={month ? `Payments for ${monthLabel(month)}` : "Payments"} />
     </>
   );
+}
+
+function formatDraftDate(iso: string): string {
+  return isRealDate(iso) ? dateLabel(iso) : "no date yet";
 }

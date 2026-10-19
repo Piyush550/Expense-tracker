@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Balances, Expense, Group, Me, MonthSummary, Settlement, SpaceDetail, SpaceSummary } from "../shared/api";
+import type { Balances, Expense, Group, Me, MonthSummary, Person, Settlement, SpaceDetail, SpaceSummary } from "../shared/api";
 import { newId, person, setup } from "./helpers";
 
 type Api = Awaited<ReturnType<typeof setup>>;
@@ -396,5 +396,75 @@ describe("recurring spaces, month by month", () => {
       { month: "2026-10", spentPaise: 600, expenseCount: 1, outstandingPaise: 300 },
       { month: "2026-09", spentPaise: 1000, expenseCount: 1, outstandingPaise: 0 },
     ]);
+  });
+});
+
+describe("people you know", () => {
+  it("lists people you share a space or group with, and adds them without an email", async () => {
+    const g = await makeSpace(); // Asha's space with Bala and Chen invited
+    const balaId = idOf(g, bala.email);
+    const chenId = idOf(g, chen.email);
+    const devId = (await me(dev)).id; // a stranger to Asha
+
+    const people = await api.call<Person[]>(asha, "GET", "/people");
+    expect(people.body.map((p) => p.name)).toEqual(["bala", "chen"]);
+    expect((await api.call<Person[]>(dev, "GET", "/people")).body).toEqual([]);
+
+    const trip = await api.call<SpaceDetail>(asha, "POST", "/spaces", { name: "Trip", kind: "one_time", memberIds: [balaId] });
+    expect(trip.status).toBe(201);
+    expect(trip.body.members.map((m) => m.name).sort()).toEqual(["asha", "bala"]);
+    expect((await api.call(asha, "POST", `/spaces/${trip.body.id}/members`, { userId: chenId })).status).toBe(201);
+    expect((await api.call(asha, "POST", `/spaces/${trip.body.id}/members`, { userId: chenId })).status).toBe(409);
+
+    // Nobody can add a stranger by id.
+    expect((await api.call(asha, "POST", `/spaces/${trip.body.id}/members`, { userId: devId })).status).toBe(404);
+    expect((await api.call(asha, "POST", "/spaces", { name: "Nope", memberIds: [devId] })).status).toBe(404);
+
+    const grp = await api.call<Group>(asha, "POST", "/groups", { name: "Flatmates", memberIds: [balaId] });
+    expect(grp.body.members.map((m) => m.name).sort()).toEqual(["asha", "bala"]);
+    const swapped = await api.call<Group>(asha, "PATCH", `/groups/${grp.body.id}`, { memberIds: [chenId], memberEmails: [dev.email] });
+    expect(swapped.body.members.map((m) => m.name).sort()).toEqual(["asha", "chen", "dev"]);
+    // Bala was taken out, so the group is no longer visible to Bala at all.
+    expect((await api.call(bala, "PATCH", `/groups/${grp.body.id}`, { memberIds: [] })).status).toBe(404);
+    // Dev is in Asha's group now, so they know each other.
+    expect((await api.call<Person[]>(dev, "GET", "/people")).body.map((p) => p.name).sort()).toEqual(["asha", "chen"]);
+  });
+});
+
+describe("bulk add", () => {
+  it("saves every row in one go, all or nothing, and is safe to retry", async () => {
+    const g = await makeSpace();
+    const ashaId = (await me()).id;
+    const balaId = idOf(g, bala.email);
+    const devId = (await me(dev)).id;
+    const row = (description: string, amountPaise: number, payerId = ashaId) => ({
+      id: newId(), description, amountPaise, payerId, splitType: "equal", spentOn: "2026-10-18",
+      splits: [{ userId: ashaId }, { userId: balaId }],
+    });
+
+    // One bad row (Dev is not in the space) stops the whole batch and names the row.
+    const bad = await api.call<{ error: { message: string; details: { index: number } } }>(asha, "POST", `/spaces/${g.id}/expenses/bulk`, {
+      expenses: [row("Milk", 6000), row("Bread", 4000, devId), row("Eggs", 9000)],
+    });
+    expect(bad.status).toBe(422);
+    expect(bad.body.error.details).toEqual({ index: 1 });
+    expect(bad.body.error.message).toMatch(/^Row 2:/);
+    expect((await api.call<Expense[]>(asha, "GET", `/spaces/${g.id}/expenses`)).body).toHaveLength(0);
+
+    const batch = { expenses: [row("Milk", 6000), row("Bread", 4000, balaId), row("Eggs", 9000)] };
+    const ok = await api.call<{ expenses: Expense[] }>(asha, "POST", `/spaces/${g.id}/expenses/bulk`, batch);
+    expect(ok.status).toBe(201);
+    expect(ok.body.expenses.map((e) => e.description)).toEqual(["Milk", "Bread", "Eggs"]);
+    expect((await balances(g.id)).transfers).toEqual([{ from: balaId, to: ashaId, amountPaise: 5500 }]);
+
+    // The same request again (e.g. the network dropped the reply) adds nothing new.
+    expect((await api.call(asha, "POST", `/spaces/${g.id}/expenses/bulk`, batch)).status).toBe(201);
+    expect((await api.call<Expense[]>(asha, "GET", `/spaces/${g.id}/expenses`)).body).toHaveLength(3);
+
+    // Input checks still apply per row, and outsiders cannot use it.
+    const invalid = await api.call(asha, "POST", `/spaces/${g.id}/expenses/bulk`, { expenses: [{ ...row("x", 100), amountPaise: -1 }] });
+    expect(invalid.status).toBe(422);
+    expect((await api.call(dev, "POST", `/spaces/${g.id}/expenses/bulk`, batch)).status).toBe(404);
+    expect((await api.call(asha, "POST", `/spaces/${g.id}/expenses/bulk`, { expenses: [] })).status).toBe(422);
   });
 });

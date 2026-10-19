@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { authErrorMessage, useAuth } from "../lib/auth";
+import { authErrorMessage, useAuth, type AuthStatus } from "../lib/auth";
+import { Brand, ThemeSwitch } from "./Header";
 
 type Mode = "signin" | "signup" | "reset";
 const validEmail = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
@@ -64,7 +65,7 @@ export function AuthScreen() {
   const title = mode === "signup" ? "Create your account" : mode === "reset" ? "Reset your password" : "Sign in";
   return (
     <div className="card authcard">
-      <h3 style={{ fontSize: 20 }}>{title}</h3>
+      <h3>{title}</h3>
       {mode !== "reset" && (
         <>
           <p className="muted" style={{ margin: "6px 0 14px" }}>
@@ -153,7 +154,7 @@ export function VerifyEmailScreen() {
 
   return (
     <div className="card authcard">
-      <h3 style={{ fontSize: 20 }}>Verify your email</h3>
+      <h3>Verify your email</h3>
       <p className="muted" style={{ margin: "6px 0 0" }}>
         We sent a verification link to <strong>{auth.user?.email}</strong>. Open it, then come back here. Check your spam folder if it is not in your inbox.
       </p>
@@ -177,6 +178,50 @@ export function VerifyEmailScreen() {
       <p className="note">
         Wrong email? <button type="button" className="linkbtn" onClick={() => auth.signOut()}>Sign out</button> and sign up again.
       </p>
+    </div>
+  );
+}
+
+const POINTS = [
+  { title: "A space for each situation", text: "Monthly for the flat's groceries and bills, one-time for a trip.", icon: "M3 7h18v13H3zM8 7V4h8v3" },
+  { title: "Split it any way", text: "Equally, by exact amounts, by percentage or by shares.", icon: "M12 3v18M3 12h18" },
+  { title: "Fewest payments to settle", text: "It works out who pays whom so everyone is square.", icon: "M5 12h14M13 6l6 6-6 6" },
+];
+
+/** Everything before the app proper: sign in / sign up / reset, verify email, or a loading state. */
+export function AuthShell({ status }: { status: AuthStatus }) {
+  return (
+    <div className="authshell">
+      <aside className="authside">
+        <Brand />
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <h1>Split shared costs. Settle up with the fewest payments.</h1>
+          <p>Log who paid and who shared it. Expense Tracker keeps the balance sheet and tells everyone exactly what to pay.</p>
+        </div>
+        <ul className="authpoints">
+          {POINTS.map((p) => (
+            <li key={p.title}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={p.icon} /></svg>
+              <span><strong>{p.title}</strong><span>{p.text}</span></span>
+            </li>
+          ))}
+        </ul>
+        <div className="authsample" aria-label="Example settle-up">
+          <div><span>Example · settle up</span><span>2 payments</span></div>
+          <div><span>Chen pays Bala</span><span className="amt">₹773.17</span></div>
+          <div><span>Chen pays Asha</span><span className="amt">₹339.66</span></div>
+        </div>
+      </aside>
+      <main className="authmain">
+        <div className="authtools"><ThemeSwitch /></div>
+        {status === "loading" ? (
+          <div className="card authcard muted">Checking your sign-in…</div>
+        ) : status === "unverified" ? (
+          <VerifyEmailScreen />
+        ) : (
+          <AuthScreen />
+        )}
+      </main>
     </div>
   );
 }

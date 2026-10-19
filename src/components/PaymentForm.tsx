@@ -3,7 +3,8 @@ import type { SettlementInput, SpaceDetail } from "../../shared/api";
 import { currentMonth, isRealDate, monthLabel, todayIso } from "../../shared/dates";
 import { paiseToInput, parseMoney } from "../../shared/money";
 import { api, errorMessage } from "../lib/api";
-import { useSpaceMutation } from "../lib/queries";
+import { noteMonth, useSpaceMutation } from "../lib/queries";
+import { DateField } from "./DateField";
 import { useToast } from "../lib/toast";
 
 export interface PaymentDraft {
@@ -26,7 +27,12 @@ export function PaymentForm({ space, meId, draft, onDone }: { space: SpaceDetail
   const [period, setPeriod] = useState(draft.period ?? currentMonth());
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
-  const save = useSpaceMutation(space.id, (input: SettlementInput) => api.createSettlement(space.id, id, input));
+  const save = useSpaceMutation(
+    space.id,
+    (input: SettlementInput) => api.createSettlement(space.id, id, input),
+    ["settlements", "balances", "months", "spaces"],
+    (saved) => noteMonth(space.id, saved.period),
+  );
   const periods = [...new Set([currentMonth(), period, ...space.months])].sort().reverse();
 
   const submit = (e: FormEvent) => {
@@ -61,7 +67,7 @@ export function PaymentForm({ space, meId, draft, onDone }: { space: SpaceDetail
           <label htmlFor="p-amt">Amount</label>
           <div className="amtwrap"><span>₹</span><input id="p-amt" type="text" inputMode="decimal" value={amountText} onChange={(e) => setAmountText(e.target.value)} autoComplete="off" /></div>
         </div>
-        <div className="field"><label htmlFor="p-date">Paid on</label><input id="p-date" type="date" value={paidOn} onChange={(e) => setPaidOn(e.target.value)} /></div>
+        <DateField label="Paid on" value={paidOn} onChange={setPaidOn} />
         {recurring && (
           <div className="field">
             <label htmlFor="p-period">Settles the month of</label>

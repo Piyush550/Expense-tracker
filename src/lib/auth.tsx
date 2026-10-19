@@ -6,7 +6,7 @@ import {
 } from "firebase/auth";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { auth } from "./firebase";
-import { queryClient } from "./queries";
+import { clearPersistedCache, queryClient, startPersistedCache } from "./queries";
 
 export type AuthStatus = "loading" | "signedOut" | "unverified" | "ready";
 
@@ -29,6 +29,19 @@ const AuthContext = createContext<AuthValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
+  // The signed-in user's saved cache is restored before any screen asks for data.
+  const [cacheFor, setCacheFor] = useState<string | null>(null);
+  const uid = user?.uid ?? null;
+  useEffect(() => {
+    if (!uid) return;
+    const { ready: restored, stop } = startPersistedCache(uid);
+    let live = true;
+    void restored.then(() => live && setCacheFor(uid));
+    return () => {
+      live = false;
+      stop();
+    };
+  }, [uid]);
   // Firebase mutates the User object in place on reload(), so bump a counter to re-render.
   const [, setTick] = useState(0);
 
@@ -58,7 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthValue>(
     () => ({
       user,
-      status: !ready ? "loading" : !user ? "signedOut" : user.emailVerified ? "ready" : "unverified",
+      status: !ready ? "loading" : !user ? "signedOut" : !user.emailVerified ? "unverified" : cacheFor === user.uid ? "ready" : "loading",
       async signInWithGoogle() {
         const provider = new GoogleAuthProvider();
         provider.setCustomParameters({ prompt: "select_account" });
@@ -88,11 +101,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (auth.currentUser) await updateProfile(auth.currentUser, { displayName: name });
       },
       async signOut() {
+        const leaving = auth.currentUser?.uid;
         await signOut(auth);
         queryClient.clear();
+        if (leaving) clearPersistedCache(leaving);
       },
     }),
-    [user, ready, checkVerified],
+    [user, ready, cacheFor, checkVerified],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

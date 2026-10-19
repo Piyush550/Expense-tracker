@@ -1,7 +1,7 @@
 // Typed calls to /api. Every request carries the Firebase ID token; a 401 retries once
 // with a freshly minted token (e.g. right after the email was verified).
 import type {
-  ApiErrorBody, Balances, Expense, ExpenseInput, Group, Me, MonthSummary, Role, Settlement, SettlementInput, SpaceDetail,
+  ApiErrorBody, Balances, Expense, ExpenseInput, Group, Me, MonthSummary, Person, Role, Settlement, SettlementInput, SpaceDetail,
   SpaceKind, SpaceSummary,
 } from "../../shared/api";
 import { auth } from "./firebase";
@@ -54,13 +54,15 @@ export const api = {
 
   spaces: () => request<SpaceSummary[]>("GET", "/spaces"),
   space: (id: string) => request<SpaceDetail>("GET", `/spaces/${id}`),
-  createSpace: (input: { name: string; kind: SpaceKind; memberEmails: string[]; groupIds: string[] }) =>
+  people: () => request<Person[]>("GET", "/people"),
+
+  createSpace: (input: { name: string; kind: SpaceKind; memberIds: string[]; memberEmails: string[]; groupIds: string[] }) =>
     request<SpaceDetail>("POST", "/spaces", input),
   updateSpace: (id: string, patch: { name?: string; kind?: SpaceKind; simplifyDebts?: boolean }) =>
     request<SpaceDetail>("PATCH", `/spaces/${id}`, patch),
   deleteSpace: (id: string) => request<void>("DELETE", `/spaces/${id}`),
 
-  addMember: (spaceId: string, email: string) => request<SpaceDetail>("POST", `/spaces/${spaceId}/members`, { email }),
+  addMember: (spaceId: string, who: { userId: string } | { email: string }) => request<SpaceDetail>("POST", `/spaces/${spaceId}/members`, who),
   addGroupToSpace: (spaceId: string, groupId: string) => request<SpaceDetail>("POST", `/spaces/${spaceId}/members`, { groupId }),
   setRole: (spaceId: string, userId: string, role: Role) => request<SpaceDetail>("PATCH", `/spaces/${spaceId}/members/${userId}`, { role }),
   removeMember: (spaceId: string, userId: string) => request<void>("DELETE", `/spaces/${spaceId}/members/${userId}`),
@@ -72,6 +74,9 @@ export const api = {
 
   expenses: (spaceId: string, month?: string) => request<Expense[]>("GET", `/spaces/${spaceId}/expenses${q(month)}`),
   createExpense: (spaceId: string, id: string, input: ExpenseInput) => request<Expense>("POST", `/spaces/${spaceId}/expenses`, { id, ...input }),
+  /** Saves all of them or none (one transaction). A failing row is named in the error's details.index. */
+  bulkCreateExpenses: (spaceId: string, expenses: (ExpenseInput & { id: string })[]) =>
+    request<{ expenses: Expense[] }>("POST", `/spaces/${spaceId}/expenses/bulk`, { expenses }),
   updateExpense: (id: string, version: number, input: ExpenseInput) => request<Expense>("PATCH", `/expenses/${id}`, { version, ...input }),
   deleteExpense: (id: string) => request<void>("DELETE", `/expenses/${id}`),
 
@@ -81,8 +86,8 @@ export const api = {
   deleteSettlement: (id: string) => request<void>("DELETE", `/settlements/${id}`),
 
   groups: () => request<Group[]>("GET", "/groups"),
-  createGroup: (name: string, memberEmails: string[]) => request<Group>("POST", "/groups", { name, memberEmails }),
-  updateGroup: (id: string, patch: { name?: string; memberEmails?: string[] }) => request<Group>("PATCH", `/groups/${id}`, patch),
+  createGroup: (name: string, memberIds: string[], memberEmails: string[]) => request<Group>("POST", "/groups", { name, memberIds, memberEmails }),
+  updateGroup: (id: string, patch: { name?: string; memberIds?: string[]; memberEmails?: string[] }) => request<Group>("PATCH", `/groups/${id}`, patch),
   deleteGroup: (id: string) => request<void>("DELETE", `/groups/${id}`),
 };
 

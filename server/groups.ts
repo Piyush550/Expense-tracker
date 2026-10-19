@@ -2,7 +2,7 @@
 import type { Group, Person } from "../shared/api";
 import type { Queryable } from "./db";
 import { forbidden, notFound } from "./errors";
-import { userIdForEmail } from "./people";
+import { requireContacts, userIdForEmail } from "./people";
 
 export async function listGroups(q: Queryable, userId: string, onlyId?: string): Promise<Group[]> {
   const { rows } = await q.query<{ id: string; name: string; created_by: string; members: Person[] | string }>(
@@ -38,9 +38,10 @@ export async function requireGroupOwner(q: Queryable, groupId: string, userId: s
   return group;
 }
 
-/** Replaces the group's people. The maker always stays in it. */
-export async function setGroupMembers(tx: Queryable, groupId: string, makerId: string, emails: string[]) {
-  const ids = new Set([makerId]);
+/** Replaces the group's people. The maker always stays in it; ids must be the maker's contacts. */
+export async function setGroupMembers(tx: Queryable, groupId: string, makerId: string, emails: string[], userIds: string[] = []) {
+  await requireContacts(tx, makerId, userIds);
+  const ids = new Set([makerId, ...userIds]);
   for (const email of emails) ids.add(await userIdForEmail(tx, email));
   await tx.query("DELETE FROM group_members WHERE group_id = $1", [groupId]);
   const list = [...ids];

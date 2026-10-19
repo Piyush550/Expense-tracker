@@ -2,17 +2,19 @@
 // space-scoped route checks membership before touching data.
 import { Hono, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import type { Balances, Expense, Group, MonthSummary, Settlement, SpaceDetail } from "../shared/api";
+import type { Balances, Expense, Group, Me, MonthSummary, Person, Settlement, SpaceDetail } from "../shared/api";
 import { activeMemberIds, assertUuid, requireMember, requireOwner } from "./access";
 import type { VerifyToken } from "./auth";
-import { pgCode, type Db } from "./db";
+import { pgCode, type Db, type Queryable } from "./db";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "./errors";
 import { findExpense, getSettlement, listExpenses, listSettlements, replaceShares, sharesFor } from "./expenses";
 import { findGroup, listGroups, requireGroupOwner, setGroupMembers } from "./groups";
 import { addEmailToSpace, addToSpace, ensureSpaceKeepsOwner, listSpaces, loadSpace } from "./spaces";
 import { type Ctx, type Env, parse, readBody } from "./http";
 import { memberNet, monthlySummary, spaceBalances } from "./ledger";
+import { listContacts, requireContacts } from "./people";
 import * as s from "./schemas";
+import type { CreateExpense } from "./schemas";
 import { mergeUsers, resolveUser } from "./users";
 
 export interface AppDeps {
@@ -69,6 +71,9 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     return c.json({ ...c.var.user, name });
   });
 
+  // People you already share a space or group with: the "add someone" dropdowns.
+  app.get("/people", async (c) => c.json<Person[]>(await listContacts(c.var.db, c.var.user.id)));
+
   // ── Spaces ────────────────────────────────────────────────────────────────────────────
   app.get("/spaces", async (c) => c.json(await listSpaces(c.var.db, c.var.user.id)));
 
@@ -83,6 +88,8 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
       );
       const spaceId = rows[0]!.id;
       await tx.query("INSERT INTO space_members (space_id, user_id, role) VALUES ($1, $2, 'owner')", [spaceId, me.id]);
+      await requireContacts(tx, me.id, body.memberIds);
+      for (const userId of new Set(body.memberIds)) if (userId !== me.id) await addToSpace(tx, spaceId, userId);
       for (const email of new Set(body.memberEmails)) await addEmailToSpace(tx, spaceId, email);
       for (const groupId of new Set(body.groupIds)) {
         for (const p of (await findGroup(tx, groupId, me.id)).members) await addToSpace(tx, spaceId, p.id);
@@ -132,7 +139,10 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const me = c.var.user;
     const detail = await c.var.db.transaction(async (tx) => {
       await requireOwner(tx, spaceId, me.id);
-      if ("email" in body) {
+      if ("userId" in body) {
+        await requireContacts(tx, me.id, [body.userId]);
+        if (!(await addToSpace(tx, spaceId, body.userId))) throw conflict("already_member", "That person is already in the space.");
+      } else if ("email" in body) {
         if (!(await addEmailToSpace(tx, spaceId, body.email, body.name))) {
           throw conflict("already_member", "That person is already in the space.");
         }
@@ -241,29 +251,59 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     return c.json<Expense[]>(await listExpenses(c.var.db, c.req.param("id"), month));
   });
 
+  // Creates one expense inside the caller's transaction. A repeated id (a retried request)
+  // returns what was stored and never overwrites it.
+  const createOne = async (tx: Queryable, spaceId: string, me: Me, body: CreateExpense, allowed: Set<string>) => {
+    const shares = sharesFor(body.amountPaise, body.splitType, body.splits, body.id, body.payerId, allowed);
+    const inserted = await tx.query(
+      `INSERT INTO expenses (id, space_id, description, amount_paise, payer_id, split_type, spent_on, remarks, created_by, updated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+       ON CONFLICT (id) DO NOTHING RETURNING id`,
+      [body.id, spaceId, body.description, body.amountPaise, body.payerId, body.splitType, body.spentOn, body.remarks, me.id],
+    );
+    if (!inserted.rows.length) {
+      const existing = await findExpense(tx, body.id, me.id);
+      if (existing && existing.spaceId === spaceId && existing.createdBy === me.id) return { expense: existing, created: false };
+      throw conflict("id_taken", "That expense id is already used.");
+    }
+    await replaceShares(tx, body.id, shares);
+    return { expense: (await findExpense(tx, body.id, me.id))!, created: true };
+  };
+
   app.post("/spaces/:id/expenses", async (c) => {
     const spaceId = c.req.param("id");
     const body = await readBody(c, s.createExpense);
     const me = c.var.user;
     const result = await c.var.db.transaction(async (tx) => {
       await requireMember(tx, spaceId, me.id);
-      const shares = sharesFor(body.amountPaise, body.splitType, body.splits, body.id, body.payerId, await activeMemberIds(tx, spaceId));
-      const inserted = await tx.query(
-        `INSERT INTO expenses (id, space_id, description, amount_paise, payer_id, split_type, spent_on, remarks, created_by, updated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
-         ON CONFLICT (id) DO NOTHING RETURNING id`,
-        [body.id, spaceId, body.description, body.amountPaise, body.payerId, body.splitType, body.spentOn, body.remarks, me.id],
-      );
-      if (!inserted.rows.length) {
-        // Same id again: a retried request. Return what was stored; never overwrite.
-        const existing = await findExpense(tx, body.id, me.id);
-        if (existing && existing.spaceId === spaceId && existing.createdBy === me.id) return { expense: existing, created: false };
-        throw conflict("id_taken", "That expense id is already used.");
-      }
-      await replaceShares(tx, body.id, shares);
-      return { expense: (await findExpense(tx, body.id, me.id))!, created: true };
+      return createOne(tx, spaceId, me, body, await activeMemberIds(tx, spaceId));
     });
     return c.json(result.expense, result.created ? 201 : 200);
+  });
+
+  // Bulk add: every expense is saved, or none is. A problem in any row is reported with its
+  // index so the app can point at that row.
+  app.post("/spaces/:id/expenses/bulk", async (c) => {
+    const spaceId = c.req.param("id");
+    const { expenses } = await readBody(c, s.bulkExpenses);
+    const me = c.var.user;
+    const saved = await c.var.db.transaction(async (tx) => {
+      await requireMember(tx, spaceId, me.id);
+      const allowed = await activeMemberIds(tx, spaceId);
+      const out: Expense[] = [];
+      for (const [index, body] of expenses.entries()) {
+        try {
+          out.push((await createOne(tx, spaceId, me, body, allowed)).expense);
+        } catch (err) {
+          if (err instanceof HttpError) {
+            throw new HttpError(err.status, err.code, `Row ${index + 1}: ${err.message}`, { index });
+          }
+          throw err;
+        }
+      }
+      return out;
+    });
+    return c.json<{ expenses: Expense[] }>({ expenses: saved }, 201);
   });
 
   app.patch("/expenses/:id", async (c) => {
@@ -362,7 +402,7 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const me = c.var.user;
     const group = await c.var.db.transaction(async (tx) => {
       const { rows } = await tx.query<{ id: string }>("INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id", [body.name, me.id]);
-      await setGroupMembers(tx, rows[0]!.id, me.id, body.memberEmails);
+      await setGroupMembers(tx, rows[0]!.id, me.id, body.memberEmails, body.memberIds);
       return findGroup(tx, rows[0]!.id, me.id);
     });
     return c.json(group, 201);
@@ -375,7 +415,9 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const group = await c.var.db.transaction(async (tx) => {
       await requireGroupOwner(tx, groupId, me.id);
       if (body.name !== undefined) await tx.query("UPDATE groups SET name = $2, updated_at = now() WHERE id = $1", [groupId, body.name]);
-      if (body.memberEmails !== undefined) await setGroupMembers(tx, groupId, me.id, body.memberEmails);
+      if (body.memberEmails !== undefined || body.memberIds !== undefined) {
+        await setGroupMembers(tx, groupId, me.id, body.memberEmails ?? [], body.memberIds ?? []);
+      }
       return findGroup(tx, groupId, me.id);
     });
     return c.json(group);

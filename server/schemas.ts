@@ -12,6 +12,7 @@ const kind = z.enum(["recurring", "one_time"]);
 
 export const email = z.string().trim().toLowerCase().pipe(z.email().max(254));
 const emails = z.array(email).max(50).default([]);
+const ids = z.array(id).max(50).default([]);
 
 export const updateMe = z.strictObject({ name: trimmed(1, 40) });
 
@@ -19,6 +20,7 @@ export const createSpace = z.strictObject({
   name: trimmed(1, 60),
   kind: kind.default("recurring"),
   memberEmails: emails,
+  memberIds: ids,
   groupIds: z.array(id).max(20).default([]),
 });
 
@@ -26,8 +28,9 @@ export const updateSpace = z
   .strictObject({ name: trimmed(1, 60).optional(), kind: kind.optional(), simplifyDebts: z.boolean().optional() })
   .refine((v) => v.name !== undefined || v.kind !== undefined || v.simplifyDebts !== undefined, "Nothing to update.");
 
-/** Add one person by email, or everyone in one of your groups. */
+/** Add someone you already know (userId), a new person by email, or everyone in one of your groups. */
 export const addMembers = z.union([
+  z.strictObject({ userId: id }),
   z.strictObject({ email, name: trimmed(1, 40).optional() }),
   z.strictObject({ groupId: id }),
 ]);
@@ -36,10 +39,15 @@ export const updateMember = z.strictObject({ role: z.enum(["owner", "member"]) }
 
 export const mergeMember = z.strictObject({ intoUserId: id });
 
-export const createGroup = z.strictObject({ name: trimmed(1, 60), memberEmails: emails });
+export const createGroup = z.strictObject({ name: trimmed(1, 60), memberEmails: emails, memberIds: ids });
+/** Sending memberEmails and/or memberIds replaces the group's people with exactly those. */
 export const updateGroup = z
-  .strictObject({ name: trimmed(1, 60).optional(), memberEmails: z.array(email).max(50).optional() })
-  .refine((v) => v.name !== undefined || v.memberEmails !== undefined, "Nothing to update.");
+  .strictObject({
+    name: trimmed(1, 60).optional(),
+    memberEmails: z.array(email).max(50).optional(),
+    memberIds: z.array(id).max(50).optional(),
+  })
+  .refine((v) => v.name !== undefined || v.memberEmails !== undefined || v.memberIds !== undefined, "Nothing to update.");
 
 const expenseFields = {
   description: trimmed(1, 100),
@@ -55,6 +63,11 @@ const expenseFields = {
 };
 
 export const createExpense = z.strictObject({ id, ...expenseFields });
+export type CreateExpense = z.output<typeof createExpense>;
+
+export const bulkExpenses = z
+  .strictObject({ expenses: z.array(createExpense).min(1).max(50) })
+  .refine((v) => new Set(v.expenses.map((e) => e.id)).size === v.expenses.length, "Each row needs its own id.");
 export const updateExpense = z.strictObject({ version: z.number().int().positive(), ...expenseFields });
 
 export const createSettlement = z
