@@ -1,28 +1,27 @@
 import { useState, type FormEvent } from "react";
 import type { SpaceDetail, SpaceKind } from "../../shared/api";
 import { api, errorMessage } from "../lib/api";
-import { useGroups, useSpaceMutation } from "../lib/queries";
+import { setSpaceDetail, useGroups, useSpaceMutation } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import { parseEmails } from "./emails";
+import { PeoplePicker } from "./PeoplePicker";
 
 export function NewSpaceForm({ onDone, onCancel }: { onDone(space: SpaceDetail): void; onCancel?: () => void }) {
   const toast = useToast();
   const groups = useGroups();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<SpaceKind>("recurring");
-  const [emails, setEmails] = useState("");
+  const [ids, setIds] = useState<string[]>([]);
+  const [emails, setEmails] = useState<string[]>([]);
   const [groupIds, setGroupIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
-  const create = useSpaceMutation(null, api.createSpace);
+  const create = useSpaceMutation(null, api.createSpace, ["spaces", "people"], setSpaceDetail);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const n = name.trim();
     if (!n) return setError("Give the space a name.");
-    const parsed = parseEmails(emails);
-    if (parsed.bad) return setError(`"${parsed.bad}" is not an email address.`);
     setError("");
-    create.mutate({ name: n, kind, memberEmails: parsed.emails, groupIds: [...groupIds] }, {
+    create.mutate({ name: n, kind, memberIds: ids, memberEmails: emails, groupIds: [...groupIds] }, {
       onSuccess: (s) => { toast("Space created"); onDone(s); },
       onError: (err) => setError(errorMessage(err)),
     });
@@ -67,11 +66,10 @@ export function NewSpaceForm({ onDone, onCancel }: { onDone(space: SpaceDetail):
           </div>
         </div>
       )}
-      <div className="field" style={{ marginTop: 14 }}>
-        <label htmlFor="s-emails">Add people by email (optional)</label>
-        <textarea id="s-emails" rows={2} placeholder="asha@gmail.com, bala@gmail.com" value={emails} onChange={(e) => setEmails(e.target.value)} />
+      <div style={{ marginTop: 14 }}>
+        <PeoplePicker legend="Add people" ids={ids} onIds={setIds} emails={emails} onEmails={setEmails} />
       </div>
-      <p className="note">You will be the owner: you decide who is in the space. Everyone in it can see and add expenses. No invite email is sent; people appear once they sign in with that email.</p>
+      <p className="note">You will be the owner: you decide who is in the space. Everyone in it can see and add expenses. Nobody gets an email: people you invite see the space once they sign in with that address.</p>
       <div className="formfoot">
         <button type="submit" className="btn primary" disabled={create.isPending}>Create space</button>
         {onCancel && <button type="button" className="btn" onClick={onCancel}>Cancel</button>}

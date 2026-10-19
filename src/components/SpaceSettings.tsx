@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import type { SpaceDetail, SpaceKind } from "../../shared/api";
 import { api, errorMessage } from "../lib/api";
-import { useSpaceMutation } from "../lib/queries";
+import { setSpaceDetail, useSpaceMutation } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { ConfirmButton } from "./ConfirmButton";
 
@@ -9,8 +9,13 @@ export function SpaceSettings({ space, onDeleted }: { space: SpaceDetail; onDele
   const toast = useToast();
   const owner = space.myRole === "owner";
   const [name, setName] = useState(space.name);
-  const update = useSpaceMutation(space.id, (patch: { name?: string; kind?: SpaceKind; simplifyDebts?: boolean }) => api.updateSpace(space.id, patch));
-  const remove = useSpaceMutation(space.id, () => api.deleteSpace(space.id));
+  const update = useSpaceMutation(
+    space.id,
+    (patch: { name?: string; kind?: SpaceKind; simplifyDebts?: boolean }) => api.updateSpace(space.id, patch),
+    ["spaces", "balances"],
+    setSpaceDetail,
+  );
+  const remove = useSpaceMutation(space.id, () => api.deleteSpace(space.id), ["spaces"]);
   const fail = (err: unknown) => toast(errorMessage(err));
 
   const rename = (e: FormEvent) => {

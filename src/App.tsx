@@ -43,7 +43,8 @@ function SignedIn() {
 
   const list = spaces.data ?? [];
   const spaceId = list.some((s) => s.id === spaceParam) ? spaceParam : (list[0]?.id ?? null);
-  const space = useSpaceOrNull(spaceId);
+  const spaceQuery = useSpace(spaceId);
+  const space = spaceId && spaceQuery.data?.id === spaceId ? spaceQuery.data : null;
   const tab: SpaceTab = SPACE_TABS.some((t) => t.id === tabParam) ? (tabParam as SpaceTab) : "expenses";
   // Recurring spaces default to this month; one-time spaces always look at everything.
   const month = space?.kind !== "recurring" ? null : monthParam === "all" ? null : monthParam && MONTH_RE.test(monthParam) ? monthParam : currentMonth();
@@ -72,7 +73,7 @@ function SignedIn() {
             groupsActive={onGroups}
           />
           {onGroups ? (
-            <GroupsPage meEmail={me.data.email} />
+            <GroupsPage meId={me.data.id} />
           ) : creating || !list.length ? (
             <>
               {!list.length && (
@@ -89,6 +90,7 @@ function SignedIn() {
             <SpaceView
               key={space.id}
               space={space}
+              updatedAt={spaceQuery.dataUpdatedAt}
               me={me.data}
               tab={tab}
               onTab={(t) => setTabParam(t === "expenses" ? null : t)}
@@ -104,9 +106,4 @@ function SignedIn() {
       ) : null}
     </div>
   );
-}
-
-function useSpaceOrNull(id: string | null) {
-  const q = useSpace(id);
-  return id && q.data?.id === id ? q.data : null;
 }

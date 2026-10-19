@@ -68,6 +68,7 @@ export function ExpensesTab({ space, me, month }: { space: SpaceDetail; me: Me; 
           meId={me.id}
           expense={editing === "new" ? null : editing}
           defaultDate={!month || month === currentMonth() ? todayIso() : `${month}-01`}
+          month={month}
           onDone={() => setEditing(null)}
         />
       )}

@@ -5,6 +5,7 @@ import { ExpensesTab } from "./ExpensesTab";
 import { MonthPicker } from "./Header";
 import { Members } from "./Members";
 import { PeopleContext } from "./People";
+import { RefreshButton } from "./RefreshButton";
 import { SpaceSettings } from "./SpaceSettings";
 
 export type SpaceTab = "expenses" | "balances" | "members" | "settings";
@@ -15,8 +16,10 @@ export const SPACE_TABS: { id: SpaceTab; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
-export function SpaceView({ space, me, tab, onTab, month, onMonth, onLeave }: {
+export function SpaceView({ space, updatedAt, me, tab, onTab, month, onMonth, onLeave }: {
   space: SpaceDetail;
+  /** When the space was last fetched from the server. */
+  updatedAt: number;
   me: Me;
   tab: SpaceTab;
   onTab(t: SpaceTab): void;
@@ -40,7 +43,10 @@ export function SpaceView({ space, me, tab, onTab, month, onMonth, onLeave }: {
             {space.myRole === "owner" ? " · you own this space" : ""}
           </p>
         </div>
-        {showMonths && <MonthPicker month={month} months={space.months} onChange={onMonth} allowAll />}
+        <div className="spacetools">
+          <RefreshButton spaceId={space.id} updatedAt={updatedAt} />
+          {showMonths && <MonthPicker month={month} months={space.months} onChange={onMonth} allowAll />}
+        </div>
       </div>
 
       <div className="subtabs" role="tablist" aria-label={`${space.name} sections`}>

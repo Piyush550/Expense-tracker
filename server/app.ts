@@ -2,7 +2,7 @@
 // space-scoped route checks membership before touching data.
 import { Hono, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import type { Balances, Expense, Group, MonthSummary, Settlement, SpaceDetail } from "../shared/api";
+import type { Balances, Expense, Group, MonthSummary, Person, Settlement, SpaceDetail } from "../shared/api";
 import { activeMemberIds, assertUuid, requireMember, requireOwner } from "./access";
 import type { VerifyToken } from "./auth";
 import { pgCode, type Db } from "./db";
@@ -12,6 +12,7 @@ import { findGroup, listGroups, requireGroupOwner, setGroupMembers } from "./gro
 import { addEmailToSpace, addToSpace, ensureSpaceKeepsOwner, listSpaces, loadSpace } from "./spaces";
 import { type Ctx, type Env, parse, readBody } from "./http";
 import { memberNet, monthlySummary, spaceBalances } from "./ledger";
+import { listContacts, requireContacts } from "./people";
 import * as s from "./schemas";
 import { mergeUsers, resolveUser } from "./users";
 
@@ -69,6 +70,9 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     return c.json({ ...c.var.user, name });
   });
 
+  // People you already share a space or group with: the "add someone" dropdowns.
+  app.get("/people", async (c) => c.json<Person[]>(await listContacts(c.var.db, c.var.user.id)));
+
   // ── Spaces ────────────────────────────────────────────────────────────────────────────
   app.get("/spaces", async (c) => c.json(await listSpaces(c.var.db, c.var.user.id)));
 
@@ -83,6 +87,8 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
       );
       const spaceId = rows[0]!.id;
       await tx.query("INSERT INTO space_members (space_id, user_id, role) VALUES ($1, $2, 'owner')", [spaceId, me.id]);
+      await requireContacts(tx, me.id, body.memberIds);
+      for (const userId of new Set(body.memberIds)) if (userId !== me.id) await addToSpace(tx, spaceId, userId);
       for (const email of new Set(body.memberEmails)) await addEmailToSpace(tx, spaceId, email);
       for (const groupId of new Set(body.groupIds)) {
         for (const p of (await findGroup(tx, groupId, me.id)).members) await addToSpace(tx, spaceId, p.id);
@@ -132,7 +138,10 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const me = c.var.user;
     const detail = await c.var.db.transaction(async (tx) => {
       await requireOwner(tx, spaceId, me.id);
-      if ("email" in body) {
+      if ("userId" in body) {
+        await requireContacts(tx, me.id, [body.userId]);
+        if (!(await addToSpace(tx, spaceId, body.userId))) throw conflict("already_member", "That person is already in the space.");
+      } else if ("email" in body) {
         if (!(await addEmailToSpace(tx, spaceId, body.email, body.name))) {
           throw conflict("already_member", "That person is already in the space.");
         }
@@ -362,7 +371,7 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const me = c.var.user;
     const group = await c.var.db.transaction(async (tx) => {
       const { rows } = await tx.query<{ id: string }>("INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id", [body.name, me.id]);
-      await setGroupMembers(tx, rows[0]!.id, me.id, body.memberEmails);
+      await setGroupMembers(tx, rows[0]!.id, me.id, body.memberEmails, body.memberIds);
       return findGroup(tx, rows[0]!.id, me.id);
     });
     return c.json(group, 201);
@@ -375,7 +384,9 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const group = await c.var.db.transaction(async (tx) => {
       await requireGroupOwner(tx, groupId, me.id);
       if (body.name !== undefined) await tx.query("UPDATE groups SET name = $2, updated_at = now() WHERE id = $1", [groupId, body.name]);
-      if (body.memberEmails !== undefined) await setGroupMembers(tx, groupId, me.id, body.memberEmails);
+      if (body.memberEmails !== undefined || body.memberIds !== undefined) {
+        await setGroupMembers(tx, groupId, me.id, body.memberEmails ?? [], body.memberIds ?? []);
+      }
       return findGroup(tx, groupId, me.id);
     });
     return c.json(group);

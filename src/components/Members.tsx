@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import type { Member, SpaceDetail } from "../../shared/api";
 import { api, errorMessage } from "../lib/api";
-import { useGroups, useSpaceMutation } from "../lib/queries";
+import { setSpaceDetail, useGroups, usePeople, useSpaceMutation } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { ConfirmButton } from "./ConfirmButton";
 import { isEmail } from "./emails";
@@ -11,26 +11,44 @@ export function Members({ space, meId, onLeft }: { space: SpaceDetail; meId: str
   const toast = useToast();
   const owner = space.myRole === "owner";
   const groups = useGroups();
+  const people = usePeople();
+  const [pick, setPick] = useState("");
+  const [inviting, setInviting] = useState(false);
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
-  const add = useSpaceMutation(space.id, (v: { email: string }) => api.addMember(space.id, v.email));
-  const addGroup = useSpaceMutation(space.id, (groupId: string) => api.addGroupToSpace(space.id, groupId));
-  const setRole = useSpaceMutation(space.id, (v: { userId: string; role: "owner" | "member" }) => api.setRole(space.id, v.userId, v.role));
-  const remove = useSpaceMutation(space.id, (userId: string) => api.removeMember(space.id, userId));
-  const merge = useSpaceMutation(space.id, (v: { userId: string; into: string }) => api.mergeMember(space.id, v.userId, v.into));
+  // Member changes return the updated space, which goes straight into the cache.
+  const add = useSpaceMutation(space.id, (who: { userId: string } | { email: string }) => api.addMember(space.id, who), ["spaces", "people"], setSpaceDetail);
+  const addGroup = useSpaceMutation(space.id, (groupId: string) => api.addGroupToSpace(space.id, groupId), ["spaces", "people"], setSpaceDetail);
+  const setRole = useSpaceMutation(space.id, (v: { userId: string; role: "owner" | "member" }) => api.setRole(space.id, v.userId, v.role), [], setSpaceDetail);
+  const remove = useSpaceMutation(space.id, (userId: string) => api.removeMember(space.id, userId), ["detail", "spaces"]);
+  const merge = useSpaceMutation(space.id, (v: { userId: string; into: string }) => api.mergeMember(space.id, v.userId, v.into), ["everything"], setSpaceDetail);
   const fail = (err: unknown) => toast(errorMessage(err));
 
   const registered = space.members.filter((m) => m.active && m.registered);
   const active = space.members.filter((m) => m.active);
   const former = space.members.filter((m) => !m.active);
 
-  const submit = (e: FormEvent) => {
+  const inSpace = new Set(active.map((m) => m.id));
+  const candidates = (people.data ?? []).filter((p) => !inSpace.has(p.id));
+
+  const addPerson = (e: FormEvent) => {
+    e.preventDefault();
+    if (!pick) return setError("Choose someone to add.");
+    setError("");
+    const name = candidates.find((p) => p.id === pick)?.name ?? "them";
+    add.mutate({ userId: pick }, {
+      onSuccess: () => { setPick(""); toast(`Added ${name}`); },
+      onError: (err) => setError(errorMessage(err)),
+    });
+  };
+
+  const invite = (e: FormEvent) => {
     e.preventDefault();
     const em = email.trim().toLowerCase();
     if (!isEmail(em)) return setError("Enter their email address.");
     setError("");
     add.mutate({ email: em }, {
-      onSuccess: () => { setEmail(""); toast("Added. They join by signing in with that email."); },
+      onSuccess: () => { setEmail(""); setInviting(false); toast("Invited. They join by signing in with that email."); },
       onError: (err) => setError(errorMessage(err)),
     });
   };
@@ -86,13 +104,32 @@ export function Members({ space, meId, onLeft }: { space: SpaceDetail; meId: str
       </div>
       {owner ? (
         <div className="card" style={{ marginTop: 12 }}>
-          <form className="inline" onSubmit={submit} noValidate>
+          <form className="inline" onSubmit={addPerson} noValidate>
             <div className="field">
-              <label htmlFor="m-email">Add someone by email</label>
-              <input id="m-email" type="email" placeholder="friend@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+              <label htmlFor="m-person">Add someone you know</label>
+              <select id="m-person" value={pick} onChange={(e) => setPick(e.target.value)} disabled={!candidates.length}>
+                <option value="">{people.isPending ? "Loading…" : candidates.length ? "Choose a person" : "Everyone you know is already here"}</option>
+                {candidates.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}{p.email ? ` · ${p.email}` : ""}</option>
+                ))}
+              </select>
             </div>
-            <button type="submit" className="btn primary" disabled={add.isPending}>Add</button>
+            <button type="submit" className="btn primary" disabled={add.isPending || !pick}>Add</button>
           </form>
+          {inviting ? (
+            <form className="inline" onSubmit={invite} noValidate style={{ marginTop: 12 }}>
+              <div className="field">
+                <label htmlFor="m-email">Invite someone new by email</label>
+                <input id="m-email" type="email" placeholder="friend@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
+              </div>
+              <button type="submit" className="btn" disabled={add.isPending}>Invite</button>
+              <button type="button" className="btn" onClick={() => { setInviting(false); setError(""); }}>Cancel</button>
+            </form>
+          ) : (
+            <p className="note" style={{ marginTop: 10 }}>
+              Not in the list? <button type="button" className="linkbtn" onClick={() => setInviting(true)}>Invite someone new by email</button>
+            </p>
+          )}
           <div className="err" role="alert" style={{ marginTop: 8 }}>{error}</div>
           {!!groups.data?.length && (
             <div className="groupbtns" style={{ marginTop: 12 }}>
@@ -111,7 +148,7 @@ export function Members({ space, meId, onLeft }: { space: SpaceDetail; meId: str
               ))}
             </div>
           )}
-          <p className="note">No email is sent. Share this site with them; they appear here as soon as they sign in with that address. People can leave or be removed only once their balance is zero.</p>
+          <p className="note">The list shows everyone you share a space or group with. People can leave or be removed only once their balance is zero.</p>
         </div>
       ) : (
         <p className="note">Only the space owner can add or remove people. You can add and edit expenses.</p>

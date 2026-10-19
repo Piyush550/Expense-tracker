@@ -17,7 +17,7 @@ export function ExpenseList({ space, meId, expenses, onEdit }: {
 }) {
   const toast = useToast();
   const name = useName();
-  const remove = useSpaceMutation(space.id, (id: string) => api.deleteExpense(id));
+  const remove = useSpaceMutation(space.id, (id: string) => api.deleteExpense(id), ["expenses", "balances", "months", "spaces"]);
   const activeIds = space.members.filter((m) => m.active).map((m) => m.id);
 
   return (
@@ -70,7 +70,7 @@ export function ExpenseList({ space, meId, expenses, onEdit }: {
 export function PaymentList({ space, meId, payments, title }: { space: SpaceDetail; meId: string; payments: Settlement[] | undefined; title: string }) {
   const toast = useToast();
   const name = useName();
-  const remove = useSpaceMutation(space.id, (id: string) => api.deleteSettlement(id));
+  const remove = useSpaceMutation(space.id, (id: string) => api.deleteSettlement(id), ["settlements", "balances", "months", "spaces"]);
   if (!payments?.length) return null;
   return (
     <section className="sec">

@@ -269,3 +269,25 @@ table.sheet tbody tr.on td:first-child { box-shadow: inset 3px 0 0 var(--accent)
   table.sheet th:nth-child(3), table.sheet td:nth-child(3) { display: none; }
   table.sheet td:first-child .linkbtn { white-space: nowrap; }
 }
+
+/* ── Date field, refresh, people picker ────────────────────────────────────────────── */
+.dateinput { position: relative; display: flex; align-items: stretch; gap: 6px; }
+.dateinput input[type="text"] { flex: 1; min-width: 0; }
+.dateinput input[aria-invalid="true"] { border-color: var(--neg); }
+.calbtn { flex: none; width: 42px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); display: grid; place-items: center; }
+.calbtn:hover { background: var(--surface-2); }
+.nativepicker { position: absolute; right: 0; bottom: 0; width: 42px; height: 100%; opacity: 0; pointer-events: none; }
+.datehint { font-size: 12px; color: var(--muted); min-height: 16px; }
+.datehint.bad { color: var(--neg); font-weight: 600; }
+.datechips { display: flex; flex-wrap: wrap; gap: 6px; }
+.datechips .btn.small { padding: 3px 9px; font-size: 12px; }
+.spacetools { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px; }
+.refreshbtn { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 0 12px; min-height: 40px; font-weight: 600; font-size: 13px; }
+.refreshbtn:hover:not([disabled]) { background: var(--surface-2); }
+.refreshbtn[disabled] { cursor: default; }
+.refreshbtn .muted { font-weight: 400; }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+.pickfilter { margin-bottom: 8px; width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; }
+@media (min-width: 861px) { .formgrid { grid-template-columns: 220px minmax(0, 1fr) 170px; } }
