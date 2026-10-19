@@ -32,8 +32,8 @@ export function downloadCsv(filename: string, expenses: Expense[], payments: Set
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function summaryText(groupName: string, monthName: string, monthTotal: number, transfers: Transfer[], name: (id: string) => string) {
-  const lines = [`${groupName} – ${monthName}`, `Spent this month: ${formatMoney(monthTotal)}`, ""];
+export function summaryText(spaceName: string, periodName: string, transfers: Transfer[], name: (id: string) => string) {
+  const lines = [`${spaceName} – ${periodName}`, ""];
   if (!transfers.length) lines.push("Everyone is settled up.");
   else {
     lines.push("To settle up:");

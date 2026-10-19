@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Balances, Expense, GroupDetail, GroupSummary, Me, Settlement } from "../shared/api";
+import type { Balances, Expense, Group, Me, MonthSummary, Settlement, SpaceDetail, SpaceSummary } from "../shared/api";
 import { newId, person, setup } from "./helpers";
 
 type Api = Awaited<ReturnType<typeof setup>>;
@@ -15,16 +15,16 @@ async function me(p = asha) {
   return (await api.call<Me>(p, "GET", "/me")).body;
 }
 
-async function makeGroup(owner = asha, emails: string[] = [bala.email, chen.email]) {
-  const res = await api.call<GroupDetail>(owner, "POST", "/groups", { name: "Flat", memberEmails: emails });
+async function makeSpace(owner = asha, emails: string[] = [bala.email, chen.email]) {
+  const res = await api.call<SpaceDetail>(owner, "POST", "/spaces", { name: "Flat", memberEmails: emails });
   expect(res.status).toBe(201);
   return res.body;
 }
 
-const idOf = (g: GroupDetail, email: string) => g.members.find((m) => m.email === email)!.id;
+const idOf = (g: SpaceDetail, email: string) => g.members.find((m) => m.email === email)!.id;
 
-async function addExpense(as: typeof asha, groupId: string, body: Record<string, unknown>) {
-  return api.call<Expense>(as, "POST", `/groups/${groupId}/expenses`, {
+async function addExpense(as: typeof asha, spaceId: string, body: Record<string, unknown>) {
+  return api.call<Expense>(as, "POST", `/spaces/${spaceId}/expenses`, {
     id: newId(),
     description: "Dinner",
     splitType: "equal",
@@ -33,8 +33,8 @@ async function addExpense(as: typeof asha, groupId: string, body: Record<string,
   });
 }
 
-async function balances(groupId: string, as = asha) {
-  return (await api.call<Balances>(as, "GET", `/groups/${groupId}/balances`)).body;
+async function balances(spaceId: string, as = asha, month?: string) {
+  return (await api.call<Balances>(as, "GET", `/spaces/${spaceId}/balances${month ? `?month=${month}` : ""}`)).body;
 }
 
 beforeEach(async () => {
@@ -71,89 +71,89 @@ describe("auth", () => {
   });
 });
 
-describe("groups and members", () => {
+describe("spaces and members", () => {
   it("invites by email and hands the placeholder over on first sign-in", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const balaPlaceholder = g.members.find((m) => m.email === bala.email)!;
     expect(balaPlaceholder.registered).toBe(false);
 
     const balaMe = await me(bala);
     expect(balaMe.id).toBe(balaPlaceholder.id);
-    const list = await api.call<GroupSummary[]>(bala, "GET", "/groups");
+    const list = await api.call<SpaceSummary[]>(bala, "GET", "/spaces");
     expect(list.body.map((x) => x.id)).toEqual([g.id]);
-    const detail = await api.call<GroupDetail>(asha, "GET", `/groups/${g.id}`);
+    const detail = await api.call<SpaceDetail>(asha, "GET", `/spaces/${g.id}`);
     expect(detail.body.members.find((m) => m.id === balaMe.id)!.registered).toBe(true);
   });
 
-  it("hides groups from people who are not in them", async () => {
-    const g = await makeGroup();
-    expect((await api.call(dev, "GET", `/groups/${g.id}`)).status).toBe(404);
-    expect((await api.call(dev, "GET", `/groups/${g.id}/expenses`)).status).toBe(404);
-    expect((await api.call(dev, "GET", `/groups/${g.id}/balances`)).status).toBe(404);
+  it("hides spaces from people who are not in them", async () => {
+    const g = await makeSpace();
+    expect((await api.call(dev, "GET", `/spaces/${g.id}`)).status).toBe(404);
+    expect((await api.call(dev, "GET", `/spaces/${g.id}/expenses`)).status).toBe(404);
+    expect((await api.call(dev, "GET", `/spaces/${g.id}/balances`)).status).toBe(404);
     expect((await addExpense(dev, g.id, { amountPaise: 100, payerId: (await me(dev)).id, splits: [] })).status).toBe(404);
-    expect((await api.call(dev, "GET", `/groups/not-a-uuid`)).status).toBe(404);
+    expect((await api.call(dev, "GET", `/spaces/not-a-uuid`)).status).toBe(404);
   });
 
   it("does not add the same person twice", async () => {
-    const g = await makeGroup();
-    const res = await api.call(asha, "POST", `/groups/${g.id}/members`, { email: "BALA@example.com" });
+    const g = await makeSpace();
+    const res = await api.call(asha, "POST", `/spaces/${g.id}/members`, { email: "BALA@example.com" });
     expect(res.status).toBe(409);
   });
 
   it("only owners remove others; members can leave when square", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     await me(bala);
     const chenId = idOf(g, chen.email);
-    expect((await api.call(bala, "DELETE", `/groups/${g.id}/members/${chenId}`)).status).toBe(403);
-    expect((await api.call(asha, "DELETE", `/groups/${g.id}/members/${chenId}`)).status).toBe(204);
-    expect((await api.call(bala, "DELETE", `/groups/${g.id}/members/${(await me(bala)).id}`)).status).toBe(204);
-    expect((await api.call(bala, "GET", `/groups/${g.id}`)).status).toBe(404);
+    expect((await api.call(bala, "DELETE", `/spaces/${g.id}/members/${chenId}`)).status).toBe(403);
+    expect((await api.call(asha, "DELETE", `/spaces/${g.id}/members/${chenId}`)).status).toBe(204);
+    expect((await api.call(bala, "DELETE", `/spaces/${g.id}/members/${(await me(bala)).id}`)).status).toBe(204);
+    expect((await api.call(bala, "GET", `/spaces/${g.id}`)).status).toBe(404);
   });
 
   it("keeps an owner and refuses to drop someone who still owes money", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const balaId = idOf(g, bala.email);
-    const leave = await api.call(asha, "DELETE", `/groups/${g.id}/members/${ashaId}`);
+    const leave = await api.call(asha, "DELETE", `/spaces/${g.id}/members/${ashaId}`);
     expect(leave.body).toMatchObject({ error: { code: "last_owner" } });
 
     await addExpense(asha, g.id, { amountPaise: 1000, payerId: ashaId, splits: [{ userId: ashaId }, { userId: balaId }] });
-    const remove = await api.call(asha, "DELETE", `/groups/${g.id}/members/${balaId}`);
+    const remove = await api.call(asha, "DELETE", `/spaces/${g.id}/members/${balaId}`);
     expect(remove.body).toMatchObject({ error: { code: "member_has_balance" } });
 
-    await api.call(asha, "POST", `/groups/${g.id}/settlements`, {
+    await api.call(asha, "POST", `/spaces/${g.id}/settlements`, {
       id: newId(), fromUserId: balaId, toUserId: ashaId, amountPaise: 500, paidOn: "2026-10-06",
     });
-    expect((await api.call(asha, "DELETE", `/groups/${g.id}/members/${balaId}`)).status).toBe(204);
+    expect((await api.call(asha, "DELETE", `/spaces/${g.id}/members/${balaId}`)).status).toBe(204);
     // A former member still shows up (expenses name them) but is marked inactive.
-    const detail = await api.call<GroupDetail>(asha, "GET", `/groups/${g.id}`);
+    const detail = await api.call<SpaceDetail>(asha, "GET", `/spaces/${g.id}`);
     expect(detail.body.members.find((m) => m.id === balaId)!.active).toBe(false);
   });
 
-  it("refuses to delete a group with open balances", async () => {
-    const g = await makeGroup();
+  it("refuses to delete a space with open balances", async () => {
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     await addExpense(asha, g.id, { amountPaise: 900, payerId: ashaId, splits: [{ userId: ashaId }, { userId: idOf(g, bala.email) }] });
-    expect((await api.call(asha, "DELETE", `/groups/${g.id}`)).status).toBe(409);
+    expect((await api.call(asha, "DELETE", `/spaces/${g.id}`)).status).toBe(409);
     await me(bala);
-    expect((await api.call(bala, "DELETE", `/groups/${g.id}`)).status).toBe(403);
+    expect((await api.call(bala, "DELETE", `/spaces/${g.id}`)).status).toBe(403);
   });
 
   it("merges an imported name into a real account", async () => {
-    const g = await makeGroup(asha, []);
+    const g = await makeSpace(asha, []);
     const ashaId = (await me()).id;
     // Legacy-style placeholder with no email, as the Firebase import creates.
     const { rows } = await api.db.query<{ id: string }>("INSERT INTO users (name) VALUES ('Old Bala') RETURNING id");
     const oldId = rows[0]!.id;
-    await api.db.query("INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)", [g.id, oldId]);
-    await api.call(asha, "POST", `/groups/${g.id}/members`, { email: bala.email });
+    await api.db.query("INSERT INTO space_members (space_id, user_id) VALUES ($1, $2)", [g.id, oldId]);
+    await api.call(asha, "POST", `/spaces/${g.id}/members`, { email: bala.email });
     const balaId = (await me(bala)).id;
 
     await addExpense(asha, g.id, { amountPaise: 900, payerId: oldId, splits: [{ userId: ashaId }, { userId: oldId }, { userId: balaId }] });
     const before = await balances(g.id);
 
     // Only the account holder (or an owner) may claim it.
-    const merged = await api.call<GroupDetail>(bala, "POST", `/groups/${g.id}/members/${oldId}/merge`, { intoUserId: balaId });
+    const merged = await api.call<SpaceDetail>(bala, "POST", `/spaces/${g.id}/members/${oldId}/merge`, { intoUserId: balaId });
     expect(merged.status).toBe(200);
     expect(merged.body.members.some((m) => m.id === oldId)).toBe(false);
 
@@ -166,7 +166,7 @@ describe("groups and members", () => {
 
 describe("expenses and balances", () => {
   it("records an equal split and suggests who pays whom", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const balaId = idOf(g, bala.email);
     const chenId = idOf(g, chen.email);
@@ -186,17 +186,17 @@ describe("expenses and balances", () => {
   });
 
   it("treats a retried create as the same expense", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const body = { id: newId(), description: "Cab", amountPaise: 500, payerId: ashaId, splitType: "equal", spentOn: "2026-10-01", splits: [{ userId: ashaId }, { userId: idOf(g, bala.email) }] };
-    expect((await api.call(asha, "POST", `/groups/${g.id}/expenses`, body)).status).toBe(201);
-    expect((await api.call(asha, "POST", `/groups/${g.id}/expenses`, body)).status).toBe(200);
-    const list = await api.call<Expense[]>(asha, "GET", `/groups/${g.id}/expenses`);
+    expect((await api.call(asha, "POST", `/spaces/${g.id}/expenses`, body)).status).toBe(201);
+    expect((await api.call(asha, "POST", `/spaces/${g.id}/expenses`, body)).status).toBe(200);
+    const list = await api.call<Expense[]>(asha, "GET", `/spaces/${g.id}/expenses`);
     expect(list.body).toHaveLength(1);
   });
 
   it("supports exact, percent and share splits and validates them", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const balaId = idOf(g, bala.email);
     const exact = await addExpense(asha, g.id, { amountPaise: 1000, payerId: ashaId, splitType: "exact", splits: [{ userId: ashaId, value: 400 }, { userId: balaId, value: 600 }] });
@@ -212,8 +212,8 @@ describe("expenses and balances", () => {
     );
   });
 
-  it("rejects people who are not in the group", async () => {
-    const g = await makeGroup();
+  it("rejects people who are not in the space", async () => {
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const devId = (await me(dev)).id;
     const res = await addExpense(asha, g.id, { amountPaise: 100, payerId: devId, splits: [{ userId: ashaId }] });
@@ -222,7 +222,7 @@ describe("expenses and balances", () => {
   });
 
   it("validates input", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const res = await addExpense(asha, g.id, { amountPaise: 1.5, payerId: ashaId, spentOn: "2026-02-30", splits: [{ userId: ashaId }] });
     expect(res.status).toBe(422);
@@ -230,7 +230,7 @@ describe("expenses and balances", () => {
   });
 
   it("detects concurrent edits with the version number", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const balaId = idOf(g, bala.email);
     const created = (await addExpense(asha, g.id, { amountPaise: 1000, payerId: ashaId, splits: [{ userId: ashaId }, { userId: balaId }] })).body;
@@ -244,14 +244,14 @@ describe("expenses and balances", () => {
   });
 
   it("filters by month and leaves deleted expenses out of balances", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const balaId = idOf(g, bala.email);
     const sept = (await addExpense(asha, g.id, { amountPaise: 1000, payerId: ashaId, spentOn: "2026-09-30", splits: [{ userId: balaId }] })).body;
     await addExpense(asha, g.id, { amountPaise: 400, payerId: ashaId, spentOn: "2026-10-01", splits: [{ userId: balaId }] });
-    const oct = await api.call<Expense[]>(asha, "GET", `/groups/${g.id}/expenses?month=2026-10`);
+    const oct = await api.call<Expense[]>(asha, "GET", `/spaces/${g.id}/expenses?month=2026-10`);
     expect(oct.body.map((e) => e.amountPaise)).toEqual([400]);
-    expect((await api.call<GroupDetail>(asha, "GET", `/groups/${g.id}`)).body.months).toEqual(["2026-10", "2026-09"]);
+    expect((await api.call<SpaceDetail>(asha, "GET", `/spaces/${g.id}`)).body.months).toEqual(["2026-10", "2026-09"]);
 
     expect((await api.call(asha, "DELETE", `/expenses/${sept.id}`)).status).toBe(204);
     expect((await api.call(asha, "DELETE", `/expenses/${sept.id}`)).status).toBe(404);
@@ -260,7 +260,7 @@ describe("expenses and balances", () => {
   });
 
   it("brings everyone to zero once the suggested payments are recorded", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const balaId = idOf(g, bala.email);
     const chenId = idOf(g, chen.email);
@@ -270,7 +270,7 @@ describe("expenses and balances", () => {
     await addExpense(asha, g.id, { amountPaise: 12345, payerId: chenId, splits: [{ userId: ashaId }, { userId: chenId }] });
 
     for (const t of (await balances(g.id)).transfers) {
-      const r = await api.call<Settlement>(asha, "POST", `/groups/${g.id}/settlements`, {
+      const r = await api.call<Settlement>(asha, "POST", `/spaces/${g.id}/settlements`, {
         id: newId(), fromUserId: t.from, toUserId: t.to, amountPaise: t.amountPaise, paidOn: "2026-10-31",
       });
       expect(r.status).toBe(201);
@@ -278,12 +278,12 @@ describe("expenses and balances", () => {
     const after = await balances(g.id);
     expect(after.transfers).toEqual([]);
     expect(after.members.every((m) => m.netPaise === 0)).toBe(true);
-    const groups = await api.call<GroupSummary[]>(asha, "GET", "/groups");
-    expect(groups.body[0]!.myBalancePaise).toBe(0);
+    const spaces = await api.call<SpaceSummary[]>(asha, "GET", "/spaces");
+    expect(spaces.body[0]!.myBalancePaise).toBe(0);
   });
 
   it("shows direct debts per pair when simplification is off", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const balaId = idOf(g, bala.email);
     const chenId = idOf(g, chen.email);
@@ -292,7 +292,7 @@ describe("expenses and balances", () => {
     await addExpense(asha, g.id, { amountPaise: 500, payerId: balaId, splits: [{ userId: chenId }] });
     expect((await balances(g.id)).transfers).toEqual([{ from: chenId, to: ashaId, amountPaise: 500 }]);
 
-    await api.call(asha, "PATCH", `/groups/${g.id}`, { simplifyDebts: false });
+    await api.call(asha, "PATCH", `/spaces/${g.id}`, { simplifyDebts: false });
     const pairwise = await balances(g.id);
     expect(pairwise.simplified).toBe(false);
     expect(pairwise.transfers).toHaveLength(2);
@@ -305,18 +305,96 @@ describe("expenses and balances", () => {
   });
 
   it("lets members delete payments and blocks outsiders", async () => {
-    const g = await makeGroup();
+    const g = await makeSpace();
     const ashaId = (await me()).id;
     const balaId = idOf(g, bala.email);
-    const pay = await api.call<Settlement>(asha, "POST", `/groups/${g.id}/settlements`, {
+    const pay = await api.call<Settlement>(asha, "POST", `/spaces/${g.id}/settlements`, {
       id: newId(), fromUserId: balaId, toUserId: ashaId, amountPaise: 100, paidOn: "2026-10-02",
     });
-    const self = await api.call(asha, "POST", `/groups/${g.id}/settlements`, {
+    const self = await api.call(asha, "POST", `/spaces/${g.id}/settlements`, {
       id: newId(), fromUserId: ashaId, toUserId: ashaId, amountPaise: 100, paidOn: "2026-10-02",
     });
     expect(self.status).toBe(422);
     expect((await api.call(dev, "DELETE", `/settlements/${pay.body.id}`)).status).toBe(404);
     expect((await api.call(asha, "DELETE", `/settlements/${pay.body.id}`)).status).toBe(204);
     expect((await balances(g.id)).transfers).toEqual([]);
+  });
+});
+
+describe("permissions", () => {
+  it("lets members add expenses but only owners manage people and settings", async () => {
+    const g = await makeSpace();
+    const balaId = (await me(bala)).id;
+    expect((await api.call(bala, "POST", `/spaces/${g.id}/members`, { email: dev.email })).status).toBe(403);
+    expect((await api.call(bala, "PATCH", `/spaces/${g.id}`, { name: "Mine now" })).status).toBe(403);
+    expect((await addExpense(bala, g.id, { amountPaise: 300, payerId: balaId, splits: [{ userId: balaId }, { userId: (await me()).id }] })).status).toBe(201);
+    const renamed = await api.call<SpaceDetail>(asha, "PATCH", `/spaces/${g.id}`, { name: "Goa trip", kind: "one_time" });
+    expect(renamed.body).toMatchObject({ name: "Goa trip", kind: "one_time" });
+  });
+});
+
+describe("groups (reusable lists of people)", () => {
+  it("are shared with their members, editable only by their maker, and fill a space in one go", async () => {
+    const made = await api.call<Group>(asha, "POST", "/groups", { name: "Boys Flat", memberEmails: [bala.email, chen.email] });
+    expect(made.status).toBe(201);
+    expect(made.body.members.map((m) => m.name).sort()).toEqual(["asha", "bala", "chen"]);
+    expect(made.body.canEdit).toBe(true);
+
+    // Bala is in it, so Bala sees it but cannot change it; Dev sees nothing.
+    const balaView = await api.call<Group[]>(bala, "GET", "/groups");
+    expect(balaView.body).toEqual([expect.objectContaining({ id: made.body.id, canEdit: false })]);
+    expect((await api.call(bala, "PATCH", `/groups/${made.body.id}`, { name: "Ours" })).status).toBe(403);
+    expect((await api.call<Group[]>(dev, "GET", "/groups")).body).toEqual([]);
+
+    // A space built from the group has all three people.
+    const space = await api.call<SpaceDetail>(asha, "POST", "/spaces", { name: "Groceries", groupIds: [made.body.id] });
+    expect(space.body.members.filter((m) => m.active)).toHaveLength(3);
+
+    // Change the group, then add it to another space: only the new person is added.
+    const edited = await api.call<Group>(asha, "PATCH", `/groups/${made.body.id}`, { memberEmails: [bala.email, dev.email] });
+    expect(edited.body.members.map((m) => m.name).sort()).toEqual(["asha", "bala", "dev"]);
+    const add = await api.call<SpaceDetail>(asha, "POST", `/spaces/${space.body.id}/members`, { groupId: made.body.id });
+    expect(add.body.members.filter((m) => m.active).map((m) => m.name).sort()).toEqual(["asha", "bala", "chen", "dev"]);
+    expect((await api.call(asha, "POST", `/spaces/${space.body.id}/members`, { groupId: made.body.id })).status).toBe(409);
+
+    // Someone who cannot see a group cannot use it.
+    const devSpace = await api.call<SpaceDetail>(dev, "POST", "/spaces", { name: "Dev's" });
+    const other = await api.call<Group>(chen, "POST", "/groups", { name: "Chen's", memberEmails: [] });
+    expect((await api.call(dev, "POST", `/spaces/${devSpace.body.id}/members`, { groupId: other.body.id })).status).toBe(404);
+
+    expect((await api.call(bala, "DELETE", `/groups/${made.body.id}`)).status).toBe(403);
+    expect((await api.call(asha, "DELETE", `/groups/${made.body.id}`)).status).toBe(204);
+    expect((await api.call<Group[]>(bala, "GET", "/groups")).body).toEqual([]);
+  });
+});
+
+describe("recurring spaces, month by month", () => {
+  it("settles each month on its own and shows a month sheet", async () => {
+    const g = await makeSpace();
+    const ashaId = (await me()).id;
+    const balaId = idOf(g, bala.email);
+    await addExpense(asha, g.id, { amountPaise: 1000, payerId: ashaId, spentOn: "2026-09-10", splits: [{ userId: ashaId }, { userId: balaId }] });
+    await addExpense(asha, g.id, { amountPaise: 600, payerId: balaId, spentOn: "2026-10-03", splits: [{ userId: ashaId }, { userId: balaId }] });
+
+    expect((await balances(g.id, asha, "2026-09")).transfers).toEqual([{ from: balaId, to: ashaId, amountPaise: 500 }]);
+    expect((await balances(g.id, asha, "2026-10")).transfers).toEqual([{ from: ashaId, to: balaId, amountPaise: 300 }]);
+    // Over all time the two months net off.
+    expect((await balances(g.id)).transfers).toEqual([{ from: balaId, to: ashaId, amountPaise: 200 }]);
+
+    // September's dues paid on 2 October still count for September.
+    const pay = await api.call<Settlement>(bala, "POST", `/spaces/${g.id}/settlements`, {
+      id: newId(), fromUserId: balaId, toUserId: ashaId, amountPaise: 500, paidOn: "2026-10-02", period: "2026-09",
+    });
+    expect(pay.body.period).toBe("2026-09");
+    expect((await balances(g.id, asha, "2026-09")).transfers).toEqual([]);
+    expect((await balances(g.id, asha, "2026-10")).transfers).toEqual([{ from: ashaId, to: balaId, amountPaise: 300 }]);
+    const sept = await api.call<Settlement[]>(asha, "GET", `/spaces/${g.id}/settlements?month=2026-09`);
+    expect(sept.body.map((s) => s.id)).toEqual([pay.body.id]);
+
+    const sheet = await api.call<MonthSummary[]>(asha, "GET", `/spaces/${g.id}/months`);
+    expect(sheet.body).toEqual([
+      { month: "2026-10", spentPaise: 600, expenseCount: 1, outstandingPaise: 300 },
+      { month: "2026-09", spentPaise: 1000, expenseCount: 1, outstandingPaise: 0 },
+    ]);
   });
 });

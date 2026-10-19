@@ -1,5 +1,5 @@
 // Turns a verified Firebase sign-in into a row in `users`, claiming any placeholder that
-// a group created for the same email before the person ever signed in.
+// a space or group created for the same email before the person ever signed in.
 import type { Me } from "../shared/api";
 import type { AuthClaims } from "./auth";
 import { pgCode, type Db, type Queryable } from "./db";
@@ -116,16 +116,22 @@ export async function mergeUsers(tx: Queryable, fromId: string, intoId: string) 
   await tx.query("UPDATE settlements SET to_user_id = $2 WHERE to_user_id = $1", p);
   await tx.query("UPDATE settlements SET created_by = $2 WHERE created_by = $1", p);
   await tx.query("UPDATE settlements SET deleted_by = $2 WHERE deleted_by = $1", p);
+  await tx.query("UPDATE spaces SET created_by = $2 WHERE created_by = $1", p);
   await tx.query("UPDATE groups SET created_by = $2 WHERE created_by = $1", p);
-  // Same group: keep the account's membership (re-activated if the placeholder was active).
+  // Same space: keep the account's membership (re-activated if the placeholder was active).
   await tx.query(
-    `UPDATE group_members s
+    `UPDATE space_members s
         SET left_at = CASE WHEN f.left_at IS NULL THEN NULL ELSE s.left_at END,
             role = CASE WHEN f.role = 'owner' THEN 'owner' ELSE s.role END
-       FROM group_members f
-      WHERE f.user_id = $1 AND s.user_id = $2 AND s.group_id = f.group_id`,
+       FROM space_members f
+      WHERE f.user_id = $1 AND s.user_id = $2 AND s.space_id = f.space_id`,
     p,
   );
+  await tx.query(
+    "DELETE FROM space_members f USING space_members s WHERE f.user_id = $1 AND s.user_id = $2 AND s.space_id = f.space_id",
+    p,
+  );
+  await tx.query("UPDATE space_members SET user_id = $2 WHERE user_id = $1", p);
   await tx.query(
     "DELETE FROM group_members f USING group_members s WHERE f.user_id = $1 AND s.user_id = $2 AND s.group_id = f.group_id",
     p,

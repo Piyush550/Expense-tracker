@@ -1,5 +1,5 @@
-// Fills the local stack (`npm run dev:local` must be running) with three verified emulator
-// accounts, a group and some expenses. Emulator-only: these accounts never exist in Firebase.
+// Fills the local stack (`npm run dev:local` must be running) with verified emulator
+// accounts, a group, a recurring space, a one-time trip and some expenses. Emulator-only: these accounts never exist in Firebase.
 //   npm run seed:local
 import { randomUUID } from "node:crypto";
 import { currentMonth, shiftMonth } from "../shared/dates";
@@ -13,6 +13,7 @@ export const DEV_ACCOUNTS = [
   { name: "Asha", email: "asha@example.test" },
   { name: "Bala", email: "bala@example.test" },
   { name: "Chen", email: "chen@example.test" },
+  { name: "Dev", email: "dev@example.test" },
 ];
 
 async function post<T>(url: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
@@ -42,19 +43,33 @@ async function main() {
   const ids: string[] = [];
   for (let i = 0; i < tokens.length; i++) ids.push((await (await fetch(`${API}/me`, { headers: as(i) })).json()).id);
 
-  const group = await post<{ id: string }>(`${API}/groups`, { name: "Flat 4B", memberEmails: DEV_ACCOUNTS.slice(1).map((a) => a.email) }, as(0));
-  const [asha, bala, chen] = ids as [string, string, string];
+  const [asha, bala, chen, dev] = ids as [string, string, string, string];
+  const flatmates = await post<{ id: string }>(`${API}/groups`, { name: "Boys Flat", memberEmails: [DEV_ACCOUNTS[1]!.email, DEV_ACCOUNTS[2]!.email] }, as(0));
+  const flat = await post<{ id: string }>(`${API}/spaces`, { name: "Flat 4B", kind: "recurring", groupIds: [flatmates.id] }, as(0));
+  const trip = await post<{ id: string }>(`${API}/spaces`, { name: "Goa trip", kind: "one_time", memberEmails: [DEV_ACCOUNTS[1]!.email, DEV_ACCOUNTS[3]!.email] }, as(0));
+
   const now = currentMonth();
   const last = shiftMonth(now, -1);
-  const expenses = [
-    { description: "Groceries", amountPaise: 245050, payerId: asha, splitType: "equal", spentOn: `${now}-02`, splits: [{ userId: asha }, { userId: bala }, { userId: chen }] },
+  const all = [{ userId: asha }, { userId: bala }, { userId: chen }];
+  const flatExpenses = [
+    { description: "Groceries", amountPaise: 245050, payerId: asha, splitType: "equal", spentOn: `${now}-02`, splits: all },
     { description: "Electricity bill", amountPaise: 318000, payerId: bala, splitType: "shares", spentOn: `${now}-05`, splits: [{ userId: asha, value: 1 }, { userId: bala, value: 2 }, { userId: chen, value: 1 }], remarks: "Bala has the AC room" },
     { description: "Pizza night", amountPaise: 129900, payerId: chen, splitType: "exact", spentOn: `${now}-08`, splits: [{ userId: asha, value: 49900 }, { userId: chen, value: 80000 }] },
+    { description: "Groceries", amountPaise: 198000, payerId: asha, splitType: "equal", spentOn: `${last}-03`, splits: all },
     { description: "Rent", amountPaise: 4500000, payerId: asha, splitType: "percent", spentOn: `${last}-01`, splits: [{ userId: asha, value: 4000 }, { userId: bala, value: 3000 }, { userId: chen, value: 3000 }] },
   ];
-  for (const e of expenses) await post(`${API}/groups/${group.id}/expenses`, { id: randomUUID(), ...e }, as(0));
-  await post(`${API}/groups/${group.id}/settlements`, { id: randomUUID(), fromUserId: bala, toUserId: asha, amountPaise: 1000000, paidOn: `${last}-15`, note: "UPI" }, as(1));
-  console.log(`Seeded group "Flat 4B" with ${expenses.length} expenses. Sign in as any of: ${DEV_ACCOUNTS.map((a) => a.email).join(", ")} (password in scripts/seed-local.ts).`);
+  for (const e of flatExpenses) await post(`${API}/spaces/${flat.id}/expenses`, { id: randomUUID(), ...e }, as(0));
+  // Last month: Bala has settled up, Chen has not.
+  await post(`${API}/spaces/${flat.id}/settlements`, { id: randomUUID(), fromUserId: bala, toUserId: asha, amountPaise: 1416000, paidOn: `${now}-01`, period: last, note: "UPI" }, as(1));
+
+  const tripPeople = [{ userId: asha }, { userId: bala }, { userId: dev }];
+  const tripExpenses = [
+    { description: "Flights", amountPaise: 2700000, payerId: dev, splitType: "equal", spentOn: `${last}-20`, splits: tripPeople },
+    { description: "Villa", amountPaise: 1800000, payerId: asha, splitType: "equal", spentOn: `${last}-21`, splits: tripPeople },
+    { description: "Scooter rental", amountPaise: 240000, payerId: bala, splitType: "exact", spentOn: `${last}-22`, splits: [{ userId: bala, value: 120000 }, { userId: dev, value: 120000 }] },
+  ];
+  for (const e of tripExpenses) await post(`${API}/spaces/${trip.id}/expenses`, { id: randomUUID(), ...e }, as(0));
+  console.log(`Seeded group "Boys Flat", spaces "Flat 4B" (monthly) and "Goa trip" (one-time). Sign in as any of: ${DEV_ACCOUNTS.map((a) => a.email).join(", ")} (password in scripts/seed-local.ts).`);
 }
 
 await main();

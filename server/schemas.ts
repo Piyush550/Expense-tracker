@@ -7,25 +7,39 @@ export const id = z.uuid();
 const trimmed = (min: number, max: number) => z.string().trim().min(min).max(max);
 const paise = z.number().int().positive().max(MAX_AMOUNT_PAISE);
 const date = z.string().refine(isRealDate, "Use a real date in YYYY-MM-DD form.");
+const month = z.string().regex(MONTH_RE, "Use a month in YYYY-MM form.");
+const kind = z.enum(["recurring", "one_time"]);
+
+export const email = z.string().trim().toLowerCase().pipe(z.email().max(254));
+const emails = z.array(email).max(50).default([]);
 
 export const updateMe = z.strictObject({ name: trimmed(1, 40) });
 
-export const email = z.string().trim().toLowerCase().pipe(z.email().max(254));
-
-export const createGroup = z.strictObject({
+export const createSpace = z.strictObject({
   name: trimmed(1, 60),
-  memberEmails: z.array(email).max(50).default([]),
+  kind: kind.default("recurring"),
+  memberEmails: emails,
+  groupIds: z.array(id).max(20).default([]),
 });
 
-export const updateGroup = z
-  .strictObject({ name: trimmed(1, 60).optional(), simplifyDebts: z.boolean().optional() })
-  .refine((v) => v.name !== undefined || v.simplifyDebts !== undefined, "Nothing to update.");
+export const updateSpace = z
+  .strictObject({ name: trimmed(1, 60).optional(), kind: kind.optional(), simplifyDebts: z.boolean().optional() })
+  .refine((v) => v.name !== undefined || v.kind !== undefined || v.simplifyDebts !== undefined, "Nothing to update.");
 
-export const addMember = z.strictObject({ email, name: trimmed(1, 40).optional() });
+/** Add one person by email, or everyone in one of your groups. */
+export const addMembers = z.union([
+  z.strictObject({ email, name: trimmed(1, 40).optional() }),
+  z.strictObject({ groupId: id }),
+]);
 
 export const updateMember = z.strictObject({ role: z.enum(["owner", "member"]) });
 
 export const mergeMember = z.strictObject({ intoUserId: id });
+
+export const createGroup = z.strictObject({ name: trimmed(1, 60), memberEmails: emails });
+export const updateGroup = z
+  .strictObject({ name: trimmed(1, 60).optional(), memberEmails: z.array(email).max(50).optional() })
+  .refine((v) => v.name !== undefined || v.memberEmails !== undefined, "Nothing to update.");
 
 const expenseFields = {
   description: trimmed(1, 100),
@@ -50,10 +64,9 @@ export const createSettlement = z
     toUserId: id,
     amountPaise: paise,
     paidOn: date,
+    period: month.optional(),
     note: z.string().trim().max(200).default(""),
   })
   .refine((v) => v.fromUserId !== v.toUserId, "Someone cannot pay themselves.");
 
-export const listQuery = z.object({
-  month: z.string().regex(MONTH_RE).optional(),
-});
+export const listQuery = z.object({ month: month.optional() });

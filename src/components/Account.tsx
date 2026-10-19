@@ -16,7 +16,8 @@ export function Account({ me }: { me: Me }) {
     mutationFn: (n: string) => api.updateMe(n),
     onSuccess: (updated) => {
       qc.setQueryData(keys.me, updated);
-      void qc.invalidateQueries({ queryKey: ["group"] });
+      void qc.invalidateQueries({ queryKey: ["space"] });
+      void qc.invalidateQueries({ queryKey: keys.groups });
       auth.setDisplayName(updated.name).catch(() => {}); // the API copy is what others see
       setOpen(false);
       toast("Name updated");

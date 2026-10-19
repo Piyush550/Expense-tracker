@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { isRealDate, MONTH_RE, shiftMonth } from "../shared/dates";
 import { computeShares } from "../shared/split";
 import type { Db, Queryable } from "../server/db";
-import { groupBalances } from "../server/ledger";
+import { spaceBalances } from "../server/ledger";
 
 interface LegacyUser { name?: string; email?: string; createdAt?: number }
 interface LegacyMember { name?: string; claimedBy?: string | null }
@@ -17,24 +17,25 @@ interface Ledger {
   members?: Record<string, LegacyMember>;
   expenses?: Record<string, LegacyExpense>;
   settled?: Record<string, Record<string, boolean>>;
-  groups?: Record<string, unknown>;
+  groups?: Record<string, LegacyGroup>;
 }
+interface LegacyGroup { name?: string; members?: Record<string, boolean>; createdBy?: string }
 
 export interface ImportOptions {
-  groupName: string;
-  /** Email of the account that will own the group; defaults to the earliest user. */
+  spaceName: string;
+  /** Email of the account that will own the space; defaults to the earliest user. */
   ownerEmail?: string;
   dryRun?: boolean;
 }
 
 export interface ImportReport {
-  groupId: string;
+  spaceId: string;
   users: number;
   placeholders: number;
   expenses: { imported: number; alreadyThere: number };
   payments: { imported: number; alreadyThere: number };
   skipped: string[];
-  presetsIgnored: number;
+  groups: number;
   balances: { name: string; netPaise: number }[];
 }
 
@@ -125,15 +126,18 @@ async function run(tx: Queryable, ledger: Ledger, opts: ImportOptions): Promise<
   }
   const resolve = async (oldId: string | undefined) => (oldId ? (idFor.get(oldId) ?? (await placeholder(oldId, "Former member"))) : undefined);
 
-  // 3. One group holding everything (the old app had a single shared ledger).
+  // 3. One recurring space holding everything: the old app was a single ledger settled monthly.
   const ownerEntry = opts.ownerEmail
     ? users.find(([, u]) => u.email?.trim().toLowerCase() === opts.ownerEmail!.trim().toLowerCase())
     : users[0];
   if (opts.ownerEmail && !ownerEntry) throw new Error(`No user with email ${opts.ownerEmail} in the export.`);
   const ownerId = ownerEntry ? idFor.get(ownerEntry[0]) : undefined;
-  if (!ownerId) throw new Error("No user accounts in the export, so there is nobody to own the group.");
-  const groupId = uuidV5("group:legacy-ledger");
-  await tx.query("INSERT INTO groups (id, name, created_by) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING", [groupId, opts.groupName, ownerId]);
+  if (!ownerId) throw new Error("No user accounts in the export, so there is nobody to own the space.");
+  const spaceId = uuidV5("space:legacy-ledger");
+  await tx.query(
+    "INSERT INTO spaces (id, name, kind, created_by) VALUES ($1, $2, 'recurring', $3) ON CONFLICT (id) DO NOTHING",
+    [spaceId, opts.spaceName, ownerId],
+  );
   const members = new Set<string>(users.map(([uid]) => idFor.get(uid)!));
 
   // 4. Expenses, split equally as the old app did.
@@ -151,10 +155,10 @@ async function run(tx: Queryable, ledger: Ledger, opts: ImportOptions): Promise<
     const createdBy = (await resolve(e.createdBy)) ?? payer;
     const updatedBy = (await resolve(e.updatedBy)) ?? createdBy;
     const inserted = await tx.query(
-      `INSERT INTO expenses (id, group_id, description, amount_paise, payer_id, split_type, spent_on, remarks, created_by, updated_by, created_at, updated_at)
+      `INSERT INTO expenses (id, space_id, description, amount_paise, payer_id, split_type, spent_on, remarks, created_by, updated_by, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, 'equal', $6, $7, $8, $9, to_timestamp($10 / 1000.0), to_timestamp($11 / 1000.0))
        ON CONFLICT (id) DO NOTHING RETURNING id`,
-      [id, groupId, (e.name?.trim() || "Expense").slice(0, 100), e.paise, payer, e.date, (e.remarks ?? "").slice(0, 500), createdBy, updatedBy,
+      [id, spaceId, (e.name?.trim() || "Expense").slice(0, 100), e.paise, payer, e.date, (e.remarks ?? "").slice(0, 500), createdBy, updatedBy,
         e.createdAt ?? Date.now(), e.updatedAt ?? e.createdAt ?? Date.now()],
     );
     members.add(payer);
@@ -166,7 +170,7 @@ async function run(tx: Queryable, ledger: Ledger, opts: ImportOptions): Promise<
     expenses.imported++;
   }
 
-  // 5. "Paid" ticks were money that actually moved: record each as a payment on the last day of its month.
+  // 5. "Paid" ticks were money that actually moved: a payment settling that month, dated its last day.
   const payments = { imported: 0, alreadyThere: 0 };
   for (const [month, ticks] of Object.entries(ledger.settled ?? {})) {
     if (!MONTH_RE.test(month)) { skipped.push(`paid ticks under "${month}": not a month`); continue; }
@@ -179,9 +183,9 @@ async function run(tx: Queryable, ledger: Ledger, opts: ImportOptions): Promise<
       const to = (await resolve(parts[1]))!;
       if (from === to) { skipped.push(`paid tick ${month}/${key}: same person on both sides after merging names`); continue; }
       const inserted = await tx.query(
-        `INSERT INTO settlements (id, group_id, from_user_id, to_user_id, amount_paise, paid_on, note, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, 'Marked paid in the old app', $7) ON CONFLICT (id) DO NOTHING RETURNING id`,
-        [uuidV5(`settled:${month}:${key}`), groupId, from, to, paise, lastDayOfMonth(month), ownerId],
+        `INSERT INTO settlements (id, space_id, from_user_id, to_user_id, amount_paise, paid_on, period, note, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'Marked paid in the old app', $8) ON CONFLICT (id) DO NOTHING RETURNING id`,
+        [uuidV5(`settled:${month}:${key}`), spaceId, from, to, paise, lastDayOfMonth(month), `${month}-01`, ownerId],
       );
       members.add(from);
       members.add(to);
@@ -192,20 +196,37 @@ async function run(tx: Queryable, ledger: Ledger, opts: ImportOptions): Promise<
 
   for (const userId of members) {
     await tx.query(
-      "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT (group_id, user_id) DO NOTHING",
-      [groupId, userId, userId === ownerId ? "owner" : "member"],
+      "INSERT INTO space_members (space_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT (space_id, user_id) DO NOTHING",
+      [spaceId, userId, userId === ownerId ? "owner" : "member"],
     );
   }
 
-  const b = await groupBalances(tx, groupId, true);
+  // 6. The old quick-pick groups ("Boys Flat") become reusable groups, owned by whoever made them.
+  let groups = 0;
+  for (const [key, g] of Object.entries(ledger.groups ?? {})) {
+    const people = new Set<string>();
+    for (const [pid, on] of Object.entries(g.members ?? {})) if (on) people.add((await resolve(pid))!);
+    const maker = (g.createdBy && idFor.get(g.createdBy)) || ownerId;
+    people.add(maker);
+    const id = uuidV5(`group:${key}`);
+    const inserted = await tx.query(
+      "INSERT INTO groups (id, name, created_by) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING RETURNING id",
+      [id, (g.name?.trim() || "Group").slice(0, 60), maker],
+    );
+    if (!inserted.rows.length) continue;
+    for (const userId of people) await tx.query("INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)", [id, userId]);
+    groups++;
+  }
+
+  const b = await spaceBalances(tx, spaceId, true);
   return {
-    groupId,
+    spaceId,
     users: users.length,
     placeholders,
     expenses,
     payments,
     skipped,
-    presetsIgnored: Object.keys(ledger.groups ?? {}).length,
+    groups,
     balances: b.members
       .filter((m) => m.netPaise !== 0)
       .map((m) => ({ name: names.get(m.userId) ?? m.userId, netPaise: m.netPaise }))

@@ -1,24 +1,29 @@
-// Group balances, computed from the stored shares and payments.
-import type { Balances, MemberBalance } from "../shared/api";
+// Balances, computed from the stored shares and payments. A recurring space is settled
+// month by month, so balances can be limited to one month: that month's expenses plus the
+// payments recorded against it (settlements.period).
+import type { Balances, MemberBalance, MonthSummary } from "../shared/api";
+import { monthRange } from "../shared/dates";
 import { pairwiseDebts, simplifyDebts, type Debt } from "../shared/settlement";
 import { num, type Queryable } from "./db";
 
-export async function groupBalances(q: Queryable, groupId: string, simplify: boolean): Promise<Balances> {
+export async function spaceBalances(q: Queryable, spaceId: string, simplify: boolean, month?: string): Promise<Balances> {
+  const range = month ? monthRange(month) : null;
   const [members, shares, payments] = await Promise.all([
-    q.query<{ user_id: string }>("SELECT user_id FROM group_members WHERE group_id = $1", [groupId]),
+    q.query<{ user_id: string }>("SELECT user_id FROM space_members WHERE space_id = $1", [spaceId]),
     // Who owes whom per expense: each participant owes the payer their share.
     q.query<{ user_id: string; payer_id: string; total: unknown }>(
       `SELECT s.user_id, e.payer_id, SUM(s.share_paise) AS total
          FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
-        WHERE e.group_id = $1 AND e.deleted_at IS NULL
+        WHERE e.space_id = $1 AND e.deleted_at IS NULL
+          ${range ? "AND e.spent_on >= $2 AND e.spent_on < $3" : ""}
         GROUP BY s.user_id, e.payer_id`,
-      [groupId],
+      range ? [spaceId, range.from, range.to] : [spaceId],
     ),
     q.query<{ from_user_id: string; to_user_id: string; total: unknown }>(
       `SELECT from_user_id, to_user_id, SUM(amount_paise) AS total
-         FROM settlements WHERE group_id = $1 AND deleted_at IS NULL
+         FROM settlements WHERE space_id = $1 AND deleted_at IS NULL ${range ? "AND period = $2" : ""}
         GROUP BY from_user_id, to_user_id`,
-      [groupId],
+      range ? [spaceId, range.from] : [spaceId],
     ),
   ]);
 
@@ -51,23 +56,75 @@ export async function groupBalances(q: Queryable, groupId: string, simplify: boo
     net[r.userId] = r.netPaise;
   }
   return {
+    month: month ?? null,
     simplified: simplify,
     members: [...rows.values()],
     transfers: simplify ? simplifyDebts(net) : pairwiseDebts(debts),
   };
 }
 
-/** One person's net balance in one group. */
-export async function memberNet(q: Queryable, groupId: string, userId: string): Promise<number> {
+/** The month-by-month sheet of a recurring space: spend and what is still unsettled. */
+export async function monthlySummary(q: Queryable, spaceId: string): Promise<MonthSummary[]> {
+  const [spent, shares, payments] = await Promise.all([
+    q.query<{ m: string; total: unknown; n: unknown }>(
+      `SELECT to_char(spent_on, 'YYYY-MM') AS m, SUM(amount_paise) AS total, COUNT(*) AS n
+         FROM expenses WHERE space_id = $1 AND deleted_at IS NULL GROUP BY 1`,
+      [spaceId],
+    ),
+    q.query<{ m: string; user_id: string; payer_id: string; total: unknown }>(
+      `SELECT to_char(e.spent_on, 'YYYY-MM') AS m, s.user_id, e.payer_id, SUM(s.share_paise) AS total
+         FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
+        WHERE e.space_id = $1 AND e.deleted_at IS NULL GROUP BY 1, 2, 3`,
+      [spaceId],
+    ),
+    q.query<{ m: string; from_user_id: string; to_user_id: string; total: unknown }>(
+      `SELECT to_char(period, 'YYYY-MM') AS m, from_user_id, to_user_id, SUM(amount_paise) AS total
+         FROM settlements WHERE space_id = $1 AND deleted_at IS NULL GROUP BY 1, 2, 3`,
+      [spaceId],
+    ),
+  ]);
+
+  const months = new Map<string, { summary: MonthSummary; net: Map<string, number> }>();
+  const at = (m: string) => {
+    let v = months.get(m);
+    if (!v) months.set(m, (v = { summary: { month: m, spentPaise: 0, expenseCount: 0, outstandingPaise: 0 }, net: new Map() }));
+    return v;
+  };
+  const add = (net: Map<string, number>, id: string, d: number) => net.set(id, (net.get(id) ?? 0) + d);
+
+  for (const r of spent.rows) {
+    const v = at(r.m).summary;
+    v.spentPaise = num(r.total);
+    v.expenseCount = num(r.n);
+  }
+  for (const r of shares.rows) {
+    const { net } = at(r.m);
+    add(net, r.payer_id, num(r.total));
+    add(net, r.user_id, -num(r.total));
+  }
+  for (const r of payments.rows) {
+    const { net } = at(r.m);
+    add(net, r.from_user_id, num(r.total));
+    add(net, r.to_user_id, -num(r.total));
+  }
+  for (const { summary, net } of months.values()) {
+    // What creditors are still owed = what debtors still owe.
+    summary.outstandingPaise = [...net.values()].reduce((a, v) => a + (v > 0 ? v : 0), 0);
+  }
+  return [...months.values()].map((v) => v.summary).sort((a, b) => b.month.localeCompare(a.month));
+}
+
+/** One person's net balance in one space, over all time. */
+export async function memberNet(q: Queryable, spaceId: string, userId: string): Promise<number> {
   const { rows } = await q.query<{ net: unknown }>(
     `SELECT
-       COALESCE((SELECT SUM(amount_paise) FROM expenses WHERE group_id = $1 AND payer_id = $2 AND deleted_at IS NULL), 0)
+       COALESCE((SELECT SUM(amount_paise) FROM expenses WHERE space_id = $1 AND payer_id = $2 AND deleted_at IS NULL), 0)
      - COALESCE((SELECT SUM(s.share_paise) FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
-                  WHERE e.group_id = $1 AND s.user_id = $2 AND e.deleted_at IS NULL), 0)
-     + COALESCE((SELECT SUM(amount_paise) FROM settlements WHERE group_id = $1 AND from_user_id = $2 AND deleted_at IS NULL), 0)
-     - COALESCE((SELECT SUM(amount_paise) FROM settlements WHERE group_id = $1 AND to_user_id = $2 AND deleted_at IS NULL), 0)
+                  WHERE e.space_id = $1 AND s.user_id = $2 AND e.deleted_at IS NULL), 0)
+     + COALESCE((SELECT SUM(amount_paise) FROM settlements WHERE space_id = $1 AND from_user_id = $2 AND deleted_at IS NULL), 0)
+     - COALESCE((SELECT SUM(amount_paise) FROM settlements WHERE space_id = $1 AND to_user_id = $2 AND deleted_at IS NULL), 0)
        AS net`,
-    [groupId, userId],
+    [spaceId, userId],
   );
   return num(rows[0]?.net);
 }

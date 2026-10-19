@@ -3,6 +3,8 @@ import type { SplitType } from "./split";
 import type { Transfer } from "./settlement";
 
 export type Role = "owner" | "member";
+/** Recurring spaces are settled month by month; one-time spaces once, over everything. */
+export type SpaceKind = "recurring" | "one_time";
 
 export interface Me {
   id: string;
@@ -10,11 +12,13 @@ export interface Me {
   email: string;
 }
 
-export interface GroupSummary {
+export interface SpaceSummary {
   id: string;
   name: string;
+  kind: SpaceKind;
+  myRole: Role;
   memberCount: number;
-  /** The signed-in user's net balance in this group (positive = is owed). */
+  /** The signed-in user's net balance in this space over all time (positive = is owed). */
   myBalancePaise: number;
 }
 
@@ -29,14 +33,32 @@ export interface Member {
   active: boolean;
 }
 
-export interface GroupDetail {
+export interface SpaceDetail {
   id: string;
   name: string;
+  kind: SpaceKind;
   simplifyDebts: boolean;
   myRole: Role;
   members: Member[];
   /** Months ("YYYY-MM") that have expenses or payments, newest first. */
   months: string[];
+}
+
+export interface Person {
+  id: string;
+  name: string;
+  email: string | null;
+  registered: boolean;
+}
+
+/** A reusable list of people, usable in every space. */
+export interface Group {
+  id: string;
+  name: string;
+  createdBy: string;
+  /** Only the person who made a group can change or delete it. */
+  canEdit: boolean;
+  members: Person[];
 }
 
 export interface ExpenseShare {
@@ -47,7 +69,7 @@ export interface ExpenseShare {
 
 export interface Expense {
   id: string;
-  groupId: string;
+  spaceId: string;
   description: string;
   amountPaise: number;
   payerId: string;
@@ -74,11 +96,13 @@ export interface ExpenseInput {
 
 export interface Settlement {
   id: string;
-  groupId: string;
+  spaceId: string;
   fromUserId: string;
   toUserId: string;
   amountPaise: number;
   paidOn: string;
+  /** The month ("YYYY-MM") this payment settles. */
+  period: string;
   note: string;
   createdBy: string;
   createdAt: string;
@@ -89,6 +113,8 @@ export interface SettlementInput {
   toUserId: string;
   amountPaise: number;
   paidOn: string;
+  /** Defaults to the month of paidOn. */
+  period?: string;
   note?: string;
 }
 
@@ -100,14 +126,25 @@ export interface MemberBalance {
   sharePaise: number;
   /** Payments they made to others minus payments they received. */
   settledPaise: number;
-  /** paid − share + settled. Positive = the group owes them. */
+  /** paid − share + settled. Positive = the space owes them. */
   netPaise: number;
 }
 
 export interface Balances {
+  /** The month these balances cover ("YYYY-MM"), or null for all time. */
+  month: string | null;
   simplified: boolean;
   members: MemberBalance[];
   transfers: Transfer[];
+}
+
+/** One row of a recurring space's month-by-month sheet. */
+export interface MonthSummary {
+  month: string;
+  spentPaise: number;
+  expenseCount: number;
+  /** Money still to move for that month once its recorded payments are counted. */
+  outstandingPaise: number;
 }
 
 export interface ApiErrorBody {

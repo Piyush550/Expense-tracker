@@ -1,0 +1,62 @@
+import { useMemo } from "react";
+import type { Me, SpaceDetail } from "../../shared/api";
+import { BalancesTab } from "./BalancesTab";
+import { ExpensesTab } from "./ExpensesTab";
+import { MonthPicker } from "./Header";
+import { Members } from "./Members";
+import { PeopleContext } from "./People";
+import { SpaceSettings } from "./SpaceSettings";
+
+export type SpaceTab = "expenses" | "balances" | "members" | "settings";
+export const SPACE_TABS: { id: SpaceTab; label: string }[] = [
+  { id: "expenses", label: "Expenses" },
+  { id: "balances", label: "Balances & settle up" },
+  { id: "members", label: "Members" },
+  { id: "settings", label: "Settings" },
+];
+
+export function SpaceView({ space, me, tab, onTab, month, onMonth, onLeave }: {
+  space: SpaceDetail;
+  me: Me;
+  tab: SpaceTab;
+  onTab(t: SpaceTab): void;
+  /** Selected month for recurring spaces; null = all months (always null for one-time spaces). */
+  month: string | null;
+  onMonth(m: string | null): void;
+  onLeave(): void;
+}) {
+  const people = useMemo(() => new Map(space.members.map((m) => [m.id, m])), [space.members]);
+  const recurring = space.kind === "recurring";
+  const active = space.members.filter((m) => m.active).length;
+  const showMonths = recurring && (tab === "expenses" || tab === "balances");
+
+  return (
+    <PeopleContext.Provider value={people}>
+      <div className="spacehead">
+        <div>
+          <h2 className="spacetitle">{space.name}</h2>
+          <p className="sub">
+            {recurring ? "Recurring · settled month by month" : "One-time · settled once"} · {active} {active === 1 ? "member" : "members"}
+            {space.myRole === "owner" ? " · you own this space" : ""}
+          </p>
+        </div>
+        {showMonths && <MonthPicker month={month} months={space.months} onChange={onMonth} allowAll />}
+      </div>
+
+      <div className="subtabs" role="tablist" aria-label={`${space.name} sections`}>
+        {SPACE_TABS.map((t) => (
+          <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div role="tabpanel" className="tabpanel">
+        {tab === "expenses" && <ExpensesTab space={space} me={me} month={month} />}
+        {tab === "balances" && <BalancesTab space={space} me={me} month={month} onMonth={onMonth} />}
+        {tab === "members" && <Members space={space} meId={me.id} onLeft={onLeave} />}
+        {tab === "settings" && <SpaceSettings key={space.id} space={space} onDeleted={onLeave} />}
+      </div>
+    </PeopleContext.Provider>
+  );
+}

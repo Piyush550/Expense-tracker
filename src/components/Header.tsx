@@ -1,12 +1,6 @@
 import { monthLabel, shiftMonth } from "../../shared/dates";
 import { useTheme } from "../lib/theme";
 
-export interface MonthNav {
-  month: string;
-  months: string[];
-  onChange(month: string): void;
-}
-
 function ThemeButton() {
   const [theme, toggle] = useTheme();
   const dark = theme === "dark";
@@ -28,8 +22,7 @@ function ThemeButton() {
   );
 }
 
-export function Header({ subtitle, nav }: { subtitle: string; nav?: MonthNav }) {
-  const options = nav ? [...new Set([nav.month, ...nav.months])].sort().reverse() : [];
+export function Header({ subtitle }: { subtitle: string }) {
   return (
     <header className="titlebar">
       <div>
@@ -38,18 +31,30 @@ export function Header({ subtitle, nav }: { subtitle: string; nav?: MonthNav }) 
       </div>
       <div className="tools">
         <ThemeButton />
-        {nav && (
-          <div className="monthnav">
-            <button type="button" aria-label="Previous month" onClick={() => nav.onChange(shiftMonth(nav.month, -1))}>‹</button>
-            <select aria-label="Month" value={nav.month} onChange={(e) => nav.onChange(e.target.value)}>
-              {options.map((m) => (
-                <option key={m} value={m}>{monthLabel(m)}</option>
-              ))}
-            </select>
-            <button type="button" aria-label="Next month" onClick={() => nav.onChange(shiftMonth(nav.month, 1))}>›</button>
-          </div>
-        )}
       </div>
     </header>
+  );
+}
+
+/** ‹ Month › picker. With `allowAll`, an "All months" choice is offered (value null). */
+export function MonthPicker({ month, months, onChange, allowAll }: {
+  month: string | null;
+  months: string[];
+  onChange(month: string | null): void;
+  allowAll?: boolean;
+}) {
+  const options = [...new Set([...(month ? [month] : []), ...months])].sort().reverse();
+  const step = (d: number) => onChange(shiftMonth(month ?? options[0] ?? "", d));
+  return (
+    <div className="monthnav">
+      <button type="button" aria-label="Previous month" disabled={!month} onClick={() => step(-1)}>‹</button>
+      <select aria-label="Month" value={month ?? "all"} onChange={(e) => onChange(e.target.value === "all" ? null : e.target.value)}>
+        {allowAll && <option value="all">All months</option>}
+        {options.map((m) => (
+          <option key={m} value={m}>{monthLabel(m)}</option>
+        ))}
+      </select>
+      <button type="button" aria-label="Next month" disabled={!month} onClick={() => step(1)}>›</button>
+    </div>
   );
 }

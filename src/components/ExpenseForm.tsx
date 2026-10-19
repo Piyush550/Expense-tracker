@@ -1,10 +1,10 @@
 import { useMemo, useState, type FormEvent } from "react";
-import type { Expense, ExpenseInput, GroupDetail, Member } from "../../shared/api";
+import type { Expense, ExpenseInput, Member, SpaceDetail } from "../../shared/api";
 import { isRealDate } from "../../shared/dates";
 import { formatMoney, paiseToInput, parseMoney } from "../../shared/money";
 import { computeShares, PERCENT_TOTAL, SplitError, type SplitInput, type SplitType } from "../../shared/split";
 import { api, ApiError, errorMessage } from "../lib/api";
-import { useGroupMutation } from "../lib/queries";
+import { useGroups, useSpaceMutation } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { Chip } from "./People";
 
@@ -35,8 +35,8 @@ function valueToText(type: SplitType, v: number | null): string {
   return String(v);
 }
 
-export function ExpenseForm({ group, meId, expense, defaultDate, onDone }: {
-  group: GroupDetail;
+export function ExpenseForm({ space, meId, expense, defaultDate, onDone }: {
+  space: SpaceDetail;
   meId: string;
   expense: Expense | null;
   defaultDate: string;
@@ -48,8 +48,16 @@ export function ExpenseForm({ group, meId, expense, defaultDate, onDone }: {
   // Active members, plus anyone already on this expense who has since left.
   const people = useMemo<Member[]>(() => {
     const onExpense = new Set(expense ? [expense.payerId, ...expense.shares.map((s) => s.userId)] : []);
-    return group.members.filter((m) => m.active || onExpense.has(m.id));
-  }, [group.members, expense]);
+    return space.members.filter((m) => m.active || onExpense.has(m.id));
+  }, [space.members, expense]);
+  const groups = useGroups();
+  // Your groups that share at least two people with this space, as one-click picks.
+  const quickPicks = useMemo(() => {
+    const here = new Set(people.filter((p) => p.active).map((p) => p.id));
+    return (groups.data ?? [])
+      .map((g) => ({ id: g.id, name: g.name, ids: g.members.map((m) => m.id).filter((id) => here.has(id)), total: g.members.length }))
+      .filter((g) => g.ids.length > 1);
+  }, [groups.data, people]);
 
   const [description, setDescription] = useState(expense?.description ?? "");
   const [amountText, setAmountText] = useState(expense ? paiseToInput(expense.amountPaise) : "");
@@ -89,12 +97,14 @@ export function ExpenseForm({ group, meId, expense, defaultDate, onDone }: {
     }
   }, [splitType, people, selected, values, amount, id]);
 
-  const switchType = (next: SplitType) => {
-    if (next === splitType) return;
-    // Start the new mode from the people currently in the split.
-    const inSplit = draft.shares ? [...draft.shares.keys()] : people.filter((p) => selected.has(p.id)).map((p) => p.id);
+  /** Moves the form to `next` split mode, starting from `inSplit` (default: whoever is in the split now). */
+  const switchType = (next: SplitType, inSplit = draft.shares ? [...draft.shares.keys()] : people.filter((p) => selected.has(p.id)).map((p) => p.id)) => {
     if (next === "equal") setSelected(new Set(inSplit));
-    else if (next === "exact" && draft.shares) setValues(Object.fromEntries([...draft.shares].map(([u, v]) => [u, paiseToInput(v)])));
+    else if (next === "exact") {
+      // Start from an equal split of the amount between these people (blank if no amount yet).
+      const even = amount && inSplit.length ? computeShares(amount, "equal", inSplit.map((userId) => ({ userId })), id) : [];
+      setValues(Object.fromEntries(even.map((s) => [s.userId, paiseToInput(s.sharePaise)])));
+    }
     else if (next === "percent" && inSplit.length) {
       const each = Math.floor(PERCENT_TOTAL / inSplit.length);
       const extra = PERCENT_TOTAL - each * inSplit.length;
@@ -104,9 +114,14 @@ export function ExpenseForm({ group, meId, expense, defaultDate, onDone }: {
     setSplitType(next);
   };
 
-  const save = useGroupMutation(group.id, (input: ExpenseInput) =>
-    expense ? api.updateExpense(expense.id, expense.version, input) : api.createExpense(group.id, id, input),
+  const save = useSpaceMutation(space.id, (input: ExpenseInput) =>
+    expense ? api.updateExpense(expense.id, expense.version, input) : api.createExpense(space.id, id, input),
   );
+  const pickGroup = (ids: string[]) => switchType(splitType, ids);
+  const sameSet = (ids: string[]) => {
+    const cur = draft.shares ? [...draft.shares.keys()] : splitType === "equal" ? [...selected] : [];
+    return cur.length === ids.length && ids.every((i) => cur.includes(i));
+  };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -183,10 +198,29 @@ export function ExpenseForm({ group, meId, expense, defaultDate, onDone }: {
           <div className="legend">Split</div>
           <div className="seg" role="group" aria-label="How to split">
             {TYPES.map((t) => (
-              <button key={t.type} type="button" aria-pressed={splitType === t.type} onClick={() => switchType(t.type)}>{t.label}</button>
+              <button key={t.type} type="button" aria-pressed={splitType === t.type} onClick={() => t.type !== splitType && switchType(t.type)}>{t.label}</button>
             ))}
           </div>
         </div>
+        {quickPicks.length > 0 && (
+          <div className="field full">
+            <div className="groupbtns" role="group" aria-label="Pick a group">
+              <span className="lbl">Groups</span>
+              {quickPicks.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  className={`btn small${sameSet(g.ids) ? " on" : ""}`}
+                  aria-pressed={sameSet(g.ids)}
+                  title={g.ids.length < g.total ? `${g.ids.length} of its ${g.total} people are in this space` : undefined}
+                  onClick={() => pickGroup(g.ids)}
+                >
+                  {g.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="field full">
           {splitType === "equal" ? (
             <>
