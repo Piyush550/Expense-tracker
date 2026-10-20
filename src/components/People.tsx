@@ -14,7 +14,7 @@ export function useName() {
 }
 
 const HUES = [222, 18, 152, 292, 42, 188, 340, 96, 262, 8, 72, 322];
-function hueFor(id: string) {
+export function hueFor(id: string) {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
   return HUES[Math.abs(h) % HUES.length];

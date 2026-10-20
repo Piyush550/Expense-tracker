@@ -4,7 +4,8 @@ import type { Me } from "../shared/api";
 import type { Db } from "./db";
 import { badRequest, HttpError } from "./errors";
 
-export type Env = { Variables: { user: Me; db: Db } };
+/** `via`: how the caller signed in. "token" (a personal token) may only use a few routes. */
+export type Env = { Variables: { user: Me; db: Db; via: "session" | "token" } };
 export type Ctx = Context<Env>;
 
 export async function readBody<S extends z.ZodType>(c: Ctx, schema: S): Promise<z.output<S>> {

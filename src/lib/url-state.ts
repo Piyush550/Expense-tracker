@@ -1,4 +1,4 @@
-// Navigation state lives in the URL (?s=space&t=tab&m=month, ?v=groups) so links and
+// Navigation state lives in the URL (?s=space&t=groups&m=month, ?v=account) so links and
 // reloads keep it, and Back works.
 import { useCallback, useSyncExternalStore } from "react";
 

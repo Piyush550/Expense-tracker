@@ -51,15 +51,33 @@ export interface Person {
   registered: boolean;
 }
 
-/** A reusable list of people, usable in every space. */
+export interface PersonInvite {
+  name: string;
+  email: string;
+}
+
+/** Existing contacts, registered directory entries, and named invitations. */
+export interface PeopleInput {
+  memberIds: string[];
+  directoryIds: string[];
+  memberInvites: PersonInvite[];
+}
+
+/** A list of current people belonging to exactly one space. */
 export interface Group {
   id: string;
+  spaceId: string;
+  /** UTC ISO timestamp with six fractional digits, preserving creation order within a millisecond. */
+  createdAt: string;
   name: string;
   createdBy: string;
-  /** Only the person who made a group can change or delete it. */
+  /** Space owners manage the groups in their space. */
   canEdit: boolean;
   members: Person[];
 }
+
+export type SpaceQuickActions = { mode: "automatic" } | { mode: "custom"; groupIds: string[] };
+export interface InitialSpaceGroup { id: string; name: string; memberIds: string[] }
 
 export interface ExpenseShare {
   userId: string;
@@ -149,4 +167,63 @@ export interface MonthSummary {
 
 export interface ApiErrorBody {
   error: { code: string; message: string; details?: unknown };
+}
+
+/** A personal token as listed in the app. The secret itself is only ever returned once. */
+export interface ApiToken {
+  id: string;
+  name: string;
+  /** Last 4 characters of the secret, to tell tokens apart. */
+  hint: string;
+  /** null = never expires. */
+  lifetimeDays: number | null;
+  createdAt: string;
+  /** When the current secret was made (creation or last regenerate). */
+  rotatedAt: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  status: "active" | "expired" | "revoked";
+}
+
+/** Returned by create and regenerate: the only time the secret is visible. */
+export interface NewApiToken {
+  token: string;
+  info: ApiToken;
+}
+
+/** One "space + who splits" choice for the phone shortcut. Always an equal split, paid by you. */
+export interface QuickPreset {
+  /** "<spaceId>.all" or "<spaceId>.<groupId>". */
+  id: string;
+  /** "Flat 4B · Everyone". Unique per user, so the shortcut can send it back as-is. */
+  label: string;
+  spaceId: string;
+  spaceName: string;
+  groupId: string | null;
+  people: { id: string; name: string }[];
+}
+
+export interface QuickOptions {
+  /** Labels in display order, for the shortcut's "Choose from List". */
+  labels: string[];
+  presets: QuickPreset[];
+}
+
+export interface QuickExpenseInput {
+  /** A preset id or its label. */
+  preset: string;
+  /** Rupees, e.g. 450 or "450.50". */
+  amount: number | string;
+  title?: string;
+  /** "2026-10-21", "today", "yesterday", "21 Oct". Defaults to today (India time). */
+  date?: string;
+  /** Optional UUID; sending the same one again cannot create a duplicate. */
+  requestId?: string;
+}
+
+export interface QuickExpenseResult {
+  /** Ready to show in the phone notification. */
+  message: string;
+  expense: Expense;
 }

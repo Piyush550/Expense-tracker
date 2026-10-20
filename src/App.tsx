@@ -2,11 +2,11 @@ import { useState } from "react";
 import { currentMonth, MONTH_RE } from "../shared/dates";
 import { errorMessage } from "./lib/api";
 import { useAuth } from "./lib/auth";
-import { useGroups, useMe, useSpace, useSpaces } from "./lib/queries";
+import { useMe, useSpace, useSpaces } from "./lib/queries";
 import { setParams, useSearchParam } from "./lib/url-state";
-import { Account } from "./components/Account";
+import { SettingsPage } from "./components/Account";
+import type { SettingsTab } from "./components/AccountMenu";
 import { AuthShell } from "./components/AuthScreen";
-import { GroupsPage } from "./components/GroupsPage";
 import { NewSpaceForm } from "./components/NewSpaceForm";
 import { Sidebar } from "./components/Sidebar";
 import { SPACE_TABS, SpaceView, type SpaceTab } from "./components/SpaceView";
@@ -16,15 +16,16 @@ export function App() {
   return status === "ready" ? <SignedIn /> : <AuthShell status={status} />;
 }
 
-// URL: ?s=<space>&t=<tab>&m=<YYYY-MM|all>, or ?v=groups / ?v=account.
+// URL: ?s=<space>&t=<tab>&m=<YYYY-MM|all>, or ?v=account.
 function SignedIn() {
   const me = useMe();
   const spaces = useSpaces();
-  const groups = useGroups();
   const [view] = useSearchParam("v");
   const [spaceParam] = useSearchParam("s");
   const [tabParam, setTabParam] = useSearchParam("t");
   const [monthParam, setMonthParam] = useSearchParam("m");
+  const [settingsParam] = useSearchParam("f");
+  const settingsTab: SettingsTab = settingsParam === "appearance" || settingsParam === "shortcut" ? settingsParam : "profile";
   const [creating, setCreating] = useState(false);
 
   const list = spaces.data ?? [];
@@ -34,12 +35,12 @@ function SignedIn() {
   const tab: SpaceTab = SPACE_TABS.some((t) => t.id === tabParam) ? (tabParam as SpaceTab) : "expenses";
   // Recurring spaces default to this month; one-time spaces always look at everything.
   const month = space?.kind !== "recurring" ? null : monthParam === "all" ? null : monthParam && MONTH_RE.test(monthParam) ? monthParam : currentMonth();
-  const mainView = view === "groups" ? "groups" : view === "account" ? "account" : creating || (spaces.data && !list.length) ? "new" : "space";
+  const mainView = view === "account" ? "account" : creating || (spaces.data && !list.length) ? "new" : "space";
 
   const error = me.error ?? spaces.error;
   const select = (id: string) => {
     setCreating(false);
-    setParams({ v: null, s: id, m: null });
+    setParams({ v: null, s: id, t: null, m: null });
   };
 
   return (
@@ -47,23 +48,19 @@ function SignedIn() {
       <Sidebar
         me={me.data}
         spaces={list}
-        groups={groups.data ?? []}
         selected={spaceId}
         view={mainView}
         onSpace={select}
         onNewSpace={() => { setParams({ v: null }); setCreating(true); }}
-        onGroups={() => { setCreating(false); setParams({ v: "groups" }); }}
-        onAccount={() => { setCreating(false); setParams({ v: "account" }); }}
+        onAccount={(tab) => { setCreating(false); setParams({ v: "account", f: tab === "profile" ? null : tab }); }}
       />
       <main className="main">
         {error && <div className="banner warn">{errorMessage(error)}</div>}
         {(me.isPending || spaces.isPending) && !error ? (
           <div className="card muted">Loading your spaces…</div>
         ) : me.data && spaces.data ? (
-          mainView === "groups" ? (
-            <GroupsPage meId={me.data.id} />
-          ) : mainView === "account" ? (
-            <Account me={me.data} onDone={() => setParams({ v: null })} />
+          mainView === "account" ? (
+            <SettingsPage me={me.data} tab={settingsTab} onTab={(t) => setParams({ f: t === "profile" ? null : t })} />
           ) : mainView === "new" ? (
             <>
               {!list.length && (
@@ -74,7 +71,7 @@ function SignedIn() {
                   </p>
                 </div>
               )}
-              <NewSpaceForm onCancel={list.length ? () => setCreating(false) : undefined} onDone={(s) => select(s.id)} />
+              <NewSpaceForm me={me.data} onCancel={list.length ? () => setCreating(false) : undefined} onDone={(s) => select(s.id)} />
             </>
           ) : space ? (
             <SpaceView

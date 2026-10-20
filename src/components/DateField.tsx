@@ -5,11 +5,12 @@ import { dateLabel, formatDateInput, isRealDate, lastDayOfMonth, monthLabel, par
  * A date box you can type into ("21", "21 Oct", "21/10", "yesterday"), with a calendar button
  * for picking instead. A bare day lands in `month` (the month being viewed) when given.
  */
-export function DateField({ label, value, onChange, month }: {
+export function DateField({ label, value, onChange, month, compact = false }: {
   label: string;
   value: string;
   onChange(iso: string): void;
   month?: string | null;
+  compact?: boolean;
 }) {
   const id = useId();
   const picker = useRef<HTMLInputElement>(null);
@@ -29,6 +30,10 @@ export function DateField({ label, value, onChange, month }: {
     if (iso && iso !== value) {
       setShownFor(iso);
       onChange(iso);
+    } else if (!iso && value) {
+      // Do not silently submit the previous valid date after an invalid edit.
+      setShownFor("");
+      onChange("");
     }
   };
   const pick = (iso: string) => {
@@ -83,7 +88,7 @@ export function DateField({ label, value, onChange, month }: {
         </button>
         <input ref={picker} className="nativepicker" type="date" tabIndex={-1} aria-hidden="true" value={value} onChange={(e) => pick(e.target.value)} />
       </div>
-      <div id={`${id}-hint`} className={`datehint${text.trim() && !parsed ? " bad" : ""}`}>
+      <div id={`${id}-hint`} className={`datehint${text.trim() && !parsed ? " bad" : compact && (!month || parsed?.startsWith(month)) ? " sr-only" : ""}`}>
         {text.trim() === ""
           ? "Type a date or pick one."
           : parsed
@@ -92,11 +97,11 @@ export function DateField({ label, value, onChange, month }: {
               (month && !parsed.startsWith(month) ? ` · goes under ${monthLabel(parsed.slice(0, 7))}` : "")
             : "Can't read that. Try 21, 21 Oct or 21/10."}
       </div>
-      <div className="datechips">
+      {!compact && <div className="datechips">
         {chips.map((c) => (
           <button key={c.iso} type="button" className={`btn small${c.iso === value ? " on" : ""}`} onClick={() => pick(c.iso)}>{c.label}</button>
         ))}
-      </div>
+      </div>}
     </div>
   );
 }

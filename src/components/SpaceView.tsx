@@ -3,16 +3,20 @@ import type { Me, SpaceDetail } from "../../shared/api";
 import { BalancesTab } from "./BalancesTab";
 import { ExpensesTab } from "./ExpensesTab";
 import { MonthPicker } from "./Header";
+import { GroupsPage } from "./GroupsPage";
 import { Members } from "./Members";
 import { PeopleContext } from "./People";
 import { RefreshButton } from "./RefreshButton";
+import { QuickActionsTab } from "./QuickActions";
 import { SpaceSettings } from "./SpaceSettings";
 
-export type SpaceTab = "expenses" | "balances" | "members" | "settings";
-export const SPACE_TABS: { id: SpaceTab; label: string }[] = [
+export type SpaceTab = "expenses" | "balances" | "members" | "groups" | "quick-actions" | "settings";
+export const SPACE_TABS: { id: SpaceTab; label: string; shortLabel?: string }[] = [
   { id: "expenses", label: "Expenses" },
-  { id: "balances", label: "Balances & settle up" },
+  { id: "balances", label: "Balances & settle up", shortLabel: "Balances" },
   { id: "members", label: "Members" },
+  { id: "groups", label: "Groups" },
+  { id: "quick-actions", label: "Quick actions" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -51,8 +55,9 @@ export function SpaceView({ space, updatedAt, me, tab, onTab, month, onMonth, on
 
       <div className="subtabs" role="tablist" aria-label={`${space.name} sections`}>
         {SPACE_TABS.map((t) => (
-          <button key={t.id} type="button" role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)}>
-            {t.label}
+          <button key={t.id} type="button" role="tab" aria-label={t.label} aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => onTab(t.id)}>
+            <span className={t.shortLabel ? "tab-full" : undefined}>{t.label}</span>
+            {t.shortLabel && <span className="tab-short" aria-hidden="true">{t.shortLabel}</span>}
           </button>
         ))}
       </div>
@@ -61,6 +66,8 @@ export function SpaceView({ space, updatedAt, me, tab, onTab, month, onMonth, on
         {tab === "expenses" && <ExpensesTab space={space} me={me} month={month} />}
         {tab === "balances" && <BalancesTab space={space} me={me} month={month} onMonth={onMonth} />}
         {tab === "members" && <Members space={space} meId={me.id} onLeft={onLeave} />}
+        {tab === "groups" && <GroupsPage space={space} meId={me.id} />}
+        {tab === "quick-actions" && <QuickActionsTab space={space} />}
         {tab === "settings" && <SpaceSettings key={space.id} space={space} onDeleted={onLeave} />}
       </div>
     </PeopleContext.Provider>

@@ -201,20 +201,23 @@ async function run(tx: Queryable, ledger: Ledger, opts: ImportOptions): Promise<
     );
   }
 
-  // 6. The old quick-pick groups ("Boys Flat") become reusable groups, owned by whoever made them.
+  // 6. Optional old quick-pick lists belong to the imported space, never to a global group list.
   let groups = 0;
   for (const [key, g] of Object.entries(ledger.groups ?? {})) {
     const people = new Set<string>();
     for (const [pid, on] of Object.entries(g.members ?? {})) if (on) people.add((await resolve(pid))!);
     const maker = (g.createdBy && idFor.get(g.createdBy)) || ownerId;
-    people.add(maker);
+    if (!people.size) continue;
     const id = uuidV5(`group:${key}`);
     const inserted = await tx.query(
-      "INSERT INTO groups (id, name, created_by) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING RETURNING id",
-      [id, (g.name?.trim() || "Group").slice(0, 60), maker],
+      "INSERT INTO groups (id, space_id, name, created_by) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING RETURNING id",
+      [id, spaceId, (g.name?.trim() || "Group").slice(0, 60), maker],
     );
     if (!inserted.rows.length) continue;
-    for (const userId of people) await tx.query("INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)", [id, userId]);
+    for (const userId of people) {
+      await tx.query("INSERT INTO space_members (space_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [spaceId, userId]);
+      await tx.query("INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)", [id, userId]);
+    }
     groups++;
   }
 

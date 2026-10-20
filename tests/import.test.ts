@@ -66,8 +66,8 @@ describe("Firebase import", () => {
     // August is settled by the imported ticks, month by month as in the old app.
     const aug = await call<{ transfers: unknown[] }>({ uid: "u2", email: "bala@example.com" }, "GET", `/spaces/${first.spaceId}/balances?month=2026-08`);
     expect(aug.body.transfers).toEqual([]);
-    // The old "Preset" quick-pick list is now a reusable group.
-    const groups = await call<{ name: string }[]>({ uid: "u1", email: "asha@example.com" }, "GET", "/groups");
+    // The optional "Preset" quick-pick list belongs only to the imported space.
+    const groups = await call<{ name: string }[]>({ uid: "u1", email: "asha@example.com" }, "GET", `/spaces/${first.spaceId}/groups`);
     expect(groups.body.map((g) => g.name)).toEqual(["Preset"]);
   });
 
