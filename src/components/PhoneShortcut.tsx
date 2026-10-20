@@ -59,7 +59,7 @@ export function PhoneShortcut() {
     <>
       <section className="card" aria-label="How the iPhone shortcut works">
         <ol className="howsteps">
-          <li><span className="howicon"><Icon name="key" /></span><span><strong>Create a key</strong><span className="muted">It lets your phone add expenses as you, and nothing else.</span></span></li>
+          <li><span className="howicon"><Icon name="key" /></span><span><strong>Create a key</strong><span className="muted">It lets your phone add expenses as you. It can never delete anything.</span></span></li>
           <li><span className="howicon"><Icon name="phone" /></span><span><strong>Build the shortcut</strong><span className="muted">A few actions in Apple's Shortcuts app, using the key.</span></span></li>
           <li><span className="howicon"><Icon name="bolt" /></span><span><strong>Pop up after apps</strong><span className="muted">Close Swiggy or Uber, pick a split, type the amount. Done.</span></span></li>
         </ol>
@@ -68,7 +68,7 @@ export function PhoneShortcut() {
     <section className="card" aria-labelledby="phone-title">
       <div className="sechead"><h2 id="phone-title">Your keys</h2></div>
       <p className="muted" style={{ margin: "0 0 14px" }}>
-        A key can only list your spaces' quick choices and add an equal split paid by you. It can't see or change anything else. Revoke it any time; the shortcut stops at once.
+        A key acts as you: it can read your spaces and add or edit expenses, payments and groups. It can't delete anything, merge people or manage keys. Revoke it any time; whatever uses it stops at once.
       </p>
 
       {fresh && (

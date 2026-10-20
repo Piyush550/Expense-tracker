@@ -1,5 +1,5 @@
-// The HTTP API. Every route below /api requires a verified Firebase sign-in or, for the few
-// routes the phone shortcut uses, a personal token. Every space-scoped route checks
+// The HTTP API. Every route below /api requires a verified Firebase sign-in or a personal
+// token (which cannot delete, merge people or manage keys). Every space-scoped route checks
 // membership before touching data.
 import { Hono, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -55,11 +55,11 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const db = getDb();
     c.set("db", db);
     if (token.startsWith(TOKEN_PREFIX)) {
-      // A personal token: signs in as the user who made it, for the shortcut's routes only.
+      // A personal token: signs in as the user who made it, for everything but destructive routes.
       const user = await userForToken(db, token);
       if (!user) throw unauthorized("This key is not valid any more. Create a new one in the app under Settings → iPhone shortcut.");
       if (!tokenMayCall(c.req.method, c.req.path)) {
-        throw forbidden("token_scope", "This key can only add expenses from the phone shortcut.");
+        throw forbidden("token_scope", "A key can't delete, merge people or manage keys. Do that in the app.");
       }
       c.set("via", "token");
       c.set("user", user);

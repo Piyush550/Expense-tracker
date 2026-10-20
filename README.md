@@ -197,10 +197,11 @@ The API is public on the internet. Security comes from the code:
 1. Every `/api` request needs a Firebase ID token. `server/auth.ts` verifies its RS256
    signature against Google's keys, plus the issuer, audience, expiry and a verified email.
    The one exception is a **personal key** (`et_…`, see "iPhone shortcut" below): it signs in
-   as the user who made it, but only for `GET /api/me`, `GET /api/quick/options` and
-   `POST /api/quick/expense`. Anything else answers 403 `token_scope`, and keys can only be
-   created, regenerated, renamed, revoked or deleted from a normal sign-in. Only a SHA-256
-   hash of each key is stored (`api_tokens`), and the key is shown once.
+   as the user who made it and can use every route **except** destructive ones: any `DELETE`,
+   merging a member (`POST /api/spaces/:id/members/:userId/merge`) and anything under
+   `/api/tokens`. Those answer 403 `token_scope` and need a normal sign-in, so a stolen key
+   cannot delete data or mint more keys. Only a SHA-256 hash of each key is stored
+   (`api_tokens`), and the key is shown once.
 2. Every space route checks the caller is an active member. Outsiders get 404, so a space's
    existence is not revealed. Only owners can add or remove people or change settings. Space
    groups and shortcuts are visible to every active member of that space.
@@ -347,7 +348,7 @@ Errors look like `{ "error": { "code", "message" } }`.
 | GET / POST | `/tokens` | sign-in only: your personal keys / create `{ name, lifetimeDays }` (`null` = never expires; the key is in the reply once) |
 | PATCH / DELETE | `/tokens/:id` | sign-in only: rename or new expiry from today / delete a revoked or expired key |
 | POST | `/tokens/:id/regenerate`, `/tokens/:id/revoke` | sign-in only: new secret for the same entry (old one stops at once) / revoke |
-| GET | `/quick/options` | key or sign-in: `{ labels, presets }`, each space as "Everyone" plus its quick-action groups |
+| GET | `/quick/options` | key or sign-in (keys also work on all other non-destructive routes): `{ labels, presets }`, each space as "Everyone" plus its quick-action groups |
 | POST | `/quick/expense` | key or sign-in: `{ preset, amount, title?, date?, requestId? }`: equal split, paid by you, dated today (India time) by default; returns `{ message, expense }` |
 
 ## iPhone shortcut

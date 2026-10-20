@@ -40,17 +40,39 @@ describe("personal tokens", () => {
     expect(list.body).toHaveLength(1);
   });
 
-  it("sign in as their owner, but only on the shortcut's routes", async () => {
+  it("sign in as their owner for everything except destructive routes", async () => {
+    const { space, ashaId, balaId } = await flat();
     const { token } = await makeToken();
     expect((await api.call<Me>(token, "GET", "/me")).body.email).toBe(asha.email);
-    expect((await api.call(token, "GET", "/quick/options")).status).toBe(200);
-    for (const [method, path] of [["GET", "/spaces"], ["GET", "/tokens"], ["POST", "/tokens"], ["GET", "/people"]] as const) {
-      const res = await api.call(token, method, path, method === "POST" ? { name: "x" } : undefined);
+    // Reading and adding work like the app.
+    expect((await api.call(token, "GET", "/spaces")).status).toBe(200);
+    expect((await api.call(token, "GET", `/spaces/${space.id}/balances`)).status).toBe(200);
+    expect((await api.call(token, "GET", "/people")).status).toBe(200);
+    const added = await api.call<Expense>(token, "POST", `/spaces/${space.id}/expenses`, {
+      id: newId(), description: "Cab", amountPaise: 600, payerId: ashaId, splitType: "equal", spentOn: "2026-10-05", splits: [{ userId: ashaId }, { userId: balaId }],
+    });
+    expect(added.status).toBe(201);
+    expect((await api.call(token, "PATCH", `/expenses/${added.body.id}`, {
+      version: 1, description: "Cab home", amountPaise: 600, payerId: ashaId, splitType: "equal", spentOn: "2026-10-05", splits: [{ userId: ashaId }, { userId: balaId }],
+    })).status).toBe(200);
+    expect((await api.call(token, "PATCH", "/me", { name: "Asha K" })).status).toBe(200);
+
+    // Destructive or key-managing routes are refused.
+    const refused: [string, string, unknown?][] = [
+      ["DELETE", `/expenses/${added.body.id}`],
+      ["DELETE", `/spaces/${space.id}`],
+      ["DELETE", `/spaces/${space.id}/members/${balaId}`],
+      ["POST", `/spaces/${space.id}/members/${balaId}/merge`, { intoUserId: ashaId }],
+      ["GET", "/tokens"],
+      ["POST", "/tokens", { name: "x" }],
+    ];
+    for (const [method, path, body] of refused) {
+      const res = await api.call(token, method, path, body);
       expect(res.status, `${method} ${path}`).toBe(403);
       expect(res.body).toMatchObject({ error: { code: "token_scope" } });
     }
-    // Google / email sign-in is untouched and still reaches everything.
-    expect((await api.call(asha, "GET", "/spaces")).status).toBe(200);
+    // The expense is still there; Google / email sign-in can still do everything.
+    expect((await api.call(asha, "DELETE", `/expenses/${added.body.id}`)).status).toBe(204);
     expect((await api.call(null, "GET", "/quick/options")).status).toBe(401);
     expect((await api.call("et_made-up", "GET", "/quick/options")).status).toBe(401);
   });

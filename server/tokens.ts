@@ -1,6 +1,7 @@
 // Personal tokens ("et_…"): long-lived, revocable keys a signed-in user creates for the iPhone
-// shortcut. They sign in as that user, but only for the routes in TOKEN_ROUTES; everything
-// else (including managing tokens) needs the normal Google / email sign-in.
+// shortcut and similar tools. They sign in as that user and can use the API like the app,
+// except for anything destructive (see tokenMayCall), which needs the normal Google / email
+// sign-in.
 import { createHash, randomBytes } from "node:crypto";
 import type { ApiToken, Me } from "../shared/api";
 import { iso, num, type Queryable } from "./db";
@@ -9,9 +10,20 @@ import { conflict, notFound } from "./errors";
 export const TOKEN_PREFIX = "et_";
 const MAX_ACTIVE = 10;
 
-/** METHOD + path (with the /api prefix) a personal token may call. */
-const TOKEN_ROUTES = new Set(["GET /api/me", "GET /api/quick/options", "POST /api/quick/expense"]);
-export const tokenMayCall = (method: string, path: string) => TOKEN_ROUTES.has(`${method} ${path.replace(/\/+$/, "")}`);
+/**
+ * Whether a personal token may call METHOD + path (with the /api prefix). Everything is allowed
+ * except what cannot be undone or would let a stolen key entrench itself:
+ * - any DELETE (expenses, payments, groups, members, spaces, keys);
+ * - merging a member into another (permanent);
+ * - anything under /api/tokens (a key cannot create, regenerate or revoke keys).
+ */
+export function tokenMayCall(method: string, path: string): boolean {
+  const p = path.replace(/\/+$/, "");
+  if (method === "DELETE") return false;
+  if (p === "/api/tokens" || p.startsWith("/api/tokens/")) return false;
+  if (/^\/api\/spaces\/[^/]+\/members\/[^/]+\/merge$/.test(p)) return false;
+  return true;
+}
 
 export const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const newSecret = () => TOKEN_PREFIX + randomBytes(32).toString("base64url");
