@@ -13,41 +13,47 @@ const kind = z.enum(["recurring", "one_time"]);
 export const email = z.string().trim().toLowerCase().pipe(z.email().max(254));
 const emails = z.array(email).max(50).default([]);
 const ids = z.array(id).max(50).default([]);
+const invitation = z.strictObject({ name: trimmed(1, 40), email });
+const invites = z.array(invitation).max(50).default([]);
 
 export const updateMe = z.strictObject({ name: trimmed(1, 40) });
+
+export const spaceGroup = z.strictObject({ name: trimmed(1, 60), memberIds: z.array(id).min(1).max(100) });
+export const updateSpaceGroup = z.strictObject({ name: trimmed(1, 60).optional(), memberIds: z.array(id).min(1).max(100).optional() })
+  .refine((v) => v.name !== undefined || v.memberIds !== undefined, "Nothing to update.");
+export const quickActions = z.discriminatedUnion("mode", [
+  z.strictObject({ mode: z.literal("automatic") }),
+  z.strictObject({ mode: z.literal("custom"), groupIds: z.array(id).min(1).max(3).refine((ids) => new Set(ids).size === ids.length, "Choose distinct groups.") }),
+]);
 
 export const createSpace = z.strictObject({
   name: trimmed(1, 60),
   kind: kind.default("recurring"),
   memberEmails: emails,
   memberIds: ids,
-  groupIds: z.array(id).max(20).default([]),
-});
+  directoryIds: ids,
+  memberInvites: invites,
+  initialGroups: z.array(spaceGroup.extend({ id })).max(20).default([]),
+  quickGroupIds: z.array(id).max(3).default([]),
+}).refine((v) => new Set(v.initialGroups.map((g) => g.id)).size === v.initialGroups.length, "Each group needs its own id.")
+  .refine((v) => new Set(v.quickGroupIds).size === v.quickGroupIds.length && v.quickGroupIds.every((id) => v.initialGroups.some((g) => g.id === id)), "Choose shortcuts from the new space's groups.");
 
 export const updateSpace = z
   .strictObject({ name: trimmed(1, 60).optional(), kind: kind.optional(), simplifyDebts: z.boolean().optional() })
   .refine((v) => v.name !== undefined || v.kind !== undefined || v.simplifyDebts !== undefined, "Nothing to update.");
 
-/** Add someone you already know (userId), a new person by email, or everyone in one of your groups. */
+/** Add someone you already know (userId), a new person by email, or a registered directory entry. */
 export const addMembers = z.union([
+  z.strictObject({ memberIds: ids, directoryIds: ids, memberInvites: invites })
+    .refine((v) => v.memberIds.length + v.directoryIds.length + v.memberInvites.length > 0, "Choose at least one person."),
+  z.strictObject({ directoryUserId: id }),
   z.strictObject({ userId: id }),
   z.strictObject({ email, name: trimmed(1, 40).optional() }),
-  z.strictObject({ groupId: id }),
 ]);
 
 export const updateMember = z.strictObject({ role: z.enum(["owner", "member"]) });
 
 export const mergeMember = z.strictObject({ intoUserId: id });
-
-export const createGroup = z.strictObject({ name: trimmed(1, 60), memberEmails: emails, memberIds: ids });
-/** Sending memberEmails and/or memberIds replaces the group's people with exactly those. */
-export const updateGroup = z
-  .strictObject({
-    name: trimmed(1, 60).optional(),
-    memberEmails: z.array(email).max(50).optional(),
-    memberIds: z.array(id).max(50).optional(),
-  })
-  .refine((v) => v.name !== undefined || v.memberEmails !== undefined || v.memberIds !== undefined, "Nothing to update.");
 
 const expenseFields = {
   description: trimmed(1, 100),
@@ -83,3 +89,20 @@ export const createSettlement = z
   .refine((v) => v.fromUserId !== v.toUserId, "Someone cannot pay themselves.");
 
 export const listQuery = z.object({ month: month.optional() });
+
+// ── Personal tokens and the phone shortcut ─────────────────────────────────────────────
+const lifetimeDays = z.number().int().min(1).max(3650).nullable();
+
+export const createToken = z.strictObject({ name: trimmed(1, 40), lifetimeDays: lifetimeDays.default(365) });
+
+export const updateToken = z
+  .strictObject({ name: trimmed(1, 40).optional(), lifetimeDays: lifetimeDays.optional() })
+  .refine((v) => v.name !== undefined || v.lifetimeDays !== undefined, "Nothing to update.");
+
+export const quickExpense = z.strictObject({
+  preset: z.string().trim().min(1).max(200),
+  amount: z.union([z.number(), z.string().trim().max(20)]),
+  title: z.string().trim().max(100).optional(),
+  date: z.string().trim().max(40).optional(),
+  requestId: id.optional(),
+});

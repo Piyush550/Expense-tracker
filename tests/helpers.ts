@@ -30,16 +30,18 @@ export async function setup() {
     },
   });
 
-  async function call<T = unknown>(as: Person | null, method: string, path: string, body?: unknown) {
+  /** `as` is a test sign-in (Person), a raw bearer token (string, e.g. a personal "et_" token), or nobody. */
+  async function call<T = unknown>(as: Person | string | null, method: string, path: string, body?: unknown) {
     const headers: Record<string, string> = {};
-    if (as) headers.authorization = `Bearer ${encodeURIComponent(JSON.stringify(as))}`;
+    if (typeof as === "string") headers.authorization = `Bearer ${as}`;
+    else if (as) headers.authorization = `Bearer ${encodeURIComponent(JSON.stringify(as))}`;
     if (body !== undefined) headers["content-type"] = "application/json";
     const res = await app.request(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await res.text();
     return { status: res.status, body: (text ? JSON.parse(text) : null) as T };
   }
 
-  return { pg, db, call };
+  return { pg, db, call, app };
 }
 
 export const person = (name: string): Person => ({ uid: `uid-${name}`, email: `${name}@example.com`, name });

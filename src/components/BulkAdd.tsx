@@ -1,269 +1,147 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SpaceDetail } from "../../shared/api";
-import { dateLabel, isRealDate } from "../../shared/dates";
+import { isRealDate } from "../../shared/dates";
 import { formatMoney, parseMoney } from "../../shared/money";
 import { api, ApiError, errorMessage } from "../lib/api";
 import { blankRow, clearDraft, loadDraft, rowHasContent, saveDraft, type Draft, type DraftRow } from "../lib/drafts";
 import { noteMonth, useGroups, useSpaceMutation } from "../lib/queries";
+import { copySelectedGroups, previewSplit, SPLIT_TYPES } from "../lib/split-draft";
 import { useToast } from "../lib/toast";
 import { ConfirmButton } from "./ConfirmButton";
 import { DateField } from "./DateField";
-import { Chip } from "./People";
+import { SplitEditor } from "./SplitEditor";
+import { useModalForm } from "./Modal";
 
-const ROWS_TO_START = 3;
-
-/**
- * Add several expenses that share a date (and usually a payer and the people splitting).
- * Rows are kept as a draft on this device while you type, and saved together in one request:
- * all of them or none.
- */
 export function BulkAdd({ space, meId, defaultDate, month, onDone }: {
-  space: SpaceDetail;
-  meId: string;
-  defaultDate: string;
-  month: string | null;
-  onDone(): void;
+  space: SpaceDetail; meId: string; defaultDate: string; month: string | null; onDone(): void;
 }) {
   const toast = useToast();
-  const active = useMemo(() => space.members.filter((m) => m.active), [space.members]);
-  const [draft, setDraft] = useState<Draft>(
-    () =>
-      loadDraft(meId, space.id) ?? {
-        date: defaultDate,
-        payerId: active.some((m) => m.id === meId) ? meId : (active[0]?.id ?? meId),
-        people: active.map((m) => m.id),
-        rows: Array.from({ length: ROWS_TO_START }, blankRow),
-        savedAt: Date.now(),
-      },
-  );
-  const [openPeople, setOpenPeople] = useState<string | null>(null);
+  const active = useMemo(() => space.members.filter((member) => member.active), [space.members]);
+  const activeIds = active.map((person) => person.id);
+  const [draft, setDraft] = useState<Draft>(() => loadDraft(meId, space.id) ?? {
+    version: 2, date: defaultDate, payerId: active.some((person) => person.id === meId) ? meId : active[0]?.id ?? meId,
+    rows: Array.from({ length: 3 }, () => blankRow(active.some((person) => person.id === meId) ? meId : active[0]?.id ?? meId, activeIds)), savedAt: Date.now(),
+  });
+  const [selectedKey, setSelectedKey] = useState(draft.rows[0]?.key ?? "");
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
+  const [quickStatus, setQuickStatus] = useState({ dirty: false, busy: false });
   const focusKey = useRef<string | null>(null);
-
-  // Keep the draft on this device as it changes.
+  const selected = draft.rows.find((row) => row.key === selectedKey) ?? draft.rows[0];
+  const editSplit = (key: string) => {
+    setSelectedKey(key);
+    // On stacked layouts, take the user to the editor they just requested.
+    requestAnimationFrame(() => {
+      const panel = document.getElementById("bulk-split-editor");
+      const body = panel?.closest(".modal-body");
+      if (panel && body && (panel.closest(".bulk-workspace")?.clientWidth ?? Infinity) <= 1000) {
+        panel.focus({ preventScroll: true });
+        body.scrollTop += panel.getBoundingClientRect().top - body.getBoundingClientRect().top;
+      }
+    });
+  };
   useEffect(() => saveDraft(meId, space.id, draft), [draft, meId, space.id]);
   useEffect(() => {
-    if (!focusKey.current) return;
-    document.getElementById(`bulk-desc-${focusKey.current}`)?.focus();
-    focusKey.current = null;
+    if (focusKey.current) { document.getElementById(`bulk-desc-${focusKey.current}`)?.focus(); focusKey.current = null; }
   });
-
-  const update = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch, savedAt: Date.now() }));
   const updateRow = (key: string, patch: Partial<DraftRow>) => {
-    setRowErrors((e) => ({ ...e, [key]: "" }));
-    setDraft((d) => ({ ...d, savedAt: Date.now(), rows: d.rows.map((r) => (r.key === key ? { ...r, ...patch } : r)) }));
+    setRowErrors((current) => ({ ...current, [key]: "" })); setError("");
+    setDraft((current) => ({ ...current, savedAt: Date.now(), rows: current.rows.map((row) => row.key === key ? { ...row, ...patch } : row) }));
   };
   const addRow = () => {
-    const row = blankRow();
-    focusKey.current = row.key;
-    setDraft((d) => ({ ...d, rows: [...d.rows, row] }));
+    if (draft.rows.length >= 50) return;
+    const row = blankRow(draft.payerId, activeIds);
+    focusKey.current = row.key; setSelectedKey(row.key);
+    setDraft((current) => ({ ...current, savedAt: Date.now(), rows: [...current.rows, row] }));
   };
-  const removeRow = (key: string) =>
-    setDraft((d) => {
-      const rows = d.rows.filter((r) => r.key !== key);
-      return { ...d, rows: rows.length ? rows : [blankRow()] };
-    });
-
-  const nameOf = (id: string) => space.members.find((m) => m.id === id)?.name ?? "Former member";
-  const peopleLabel = (ids: string[]) =>
-    ids.length === active.length && active.every((m) => ids.includes(m.id)) ? `Everyone (${ids.length})` : ids.length === 1 ? nameOf(ids[0]!) : `${ids.length} people`;
-
-  const groups = useGroups();
+  const removeRow = (key: string) => {
+    let rows = draft.rows.filter((row) => row.key !== key);
+    if (!rows.length) rows = [blankRow(draft.payerId, activeIds)];
+    if (selectedKey === key) setSelectedKey(rows[0]!.key);
+    setDraft({ ...draft, rows, savedAt: Date.now() });
+    setError("");
+  };
+  const copyToNext = () => {
+    if (!selected) return;
+    const index = draft.rows.findIndex((row) => row.key === selected.key);
+    let next = draft.rows[index + 1];
+    if (!next && draft.rows.length >= 50) return;
+    const created = !next;
+    next ??= blankRow(draft.payerId, activeIds);
+    const copied = { ...next, people: [...selected.people], splitType: selected.splitType, values: { ...selected.values }, selectedGroups: copySelectedGroups(selected) };
+    setDraft((current) => ({ ...current, savedAt: Date.now(), rows: created ? [...current.rows, copied] : current.rows.map((row) => row.key === copied.key ? copied : row) }));
+    setRowErrors((current) => ({ ...current, [copied.key]: "" })); setError("");
+    setSelectedKey(copied.key); toast("Split copied to the next expense");
+  };
+  const groups = useGroups(space.id);
   const quickPicks = useMemo(() => {
-    const here = new Set(active.map((m) => m.id));
-    return (groups.data ?? []).map((g) => ({ id: g.id, name: g.name, ids: g.members.map((m) => m.id).filter((id) => here.has(id)) })).filter((g) => g.ids.length > 1);
+    const here = new Set(active.map((person) => person.id));
+    return (groups.data ?? []).map((group) => ({ id: group.id, name: group.name, ids: group.members.map((person) => person.id).filter((uid) => here.has(uid)), total: group.members.length }));
   }, [groups.data, active]);
-
   const filled = draft.rows.filter(rowHasContent);
-  const total = filled.reduce((a, r) => a + (parseMoney(r.amount) ?? 0), 0);
-
-  const save = useSpaceMutation(
-    space.id,
-    (rows: DraftRow[]) =>
-      api.bulkCreateExpenses(
-        space.id,
-        rows.map((r) => ({
-          id: r.key,
-          description: r.description.trim(),
-          amountPaise: parseMoney(r.amount)!,
-          payerId: r.payerId ?? draft.payerId,
-          splitType: "equal",
-          spentOn: draft.date,
-          splits: (r.people ?? draft.people).map((userId) => ({ userId })),
-        })),
-      ),
-    ["expenses", "balances", "months", "spaces"],
-    () => noteMonth(space.id, draft.date.slice(0, 7)),
-  );
-
+  const total = filled.reduce((sum, row) => sum + (parseMoney(row.amount) ?? 0), 0);
+  const save = useSpaceMutation(space.id, (rows: DraftRow[]) => api.bulkCreateExpenses(space.id, rows.map((row) => ({
+    id: row.key, description: row.description.trim(), amountPaise: parseMoney(row.amount)!, payerId: row.payerId,
+    splitType: row.splitType, spentOn: draft.date, splits: previewSplit(parseMoney(row.amount), row.splitType, row.people, row.values, row.key).splits,
+  }))), ["expenses", "balances", "months", "spaces"], () => noteMonth(space.id, draft.date.slice(0, 7)));
   const submit = () => {
-    if (save.isPending) return;
+    if (save.isPending || quickStatus.busy) return;
     if (!isRealDate(draft.date)) return setError("Choose the date for these expenses.");
     if (!filled.length) return setError("Fill in at least one row.");
-    const errs: Record<string, string> = {};
-    for (const r of filled) {
-      if (!r.description.trim()) errs[r.key] = "Give it a name.";
-      else if (!parseMoney(r.amount)) errs[r.key] = "Enter an amount above zero, like 250 or 250.50.";
-      else if (!(r.people ?? draft.people).length) errs[r.key] = "Pick at least one person to split between.";
+    const errors: Record<string, string> = {};
+    for (const row of filled) {
+      const preview = previewSplit(parseMoney(row.amount), row.splitType, row.people, row.values, row.key);
+      if (!row.description.trim()) errors[row.key] = "Give it a name.";
+      else if (!parseMoney(row.amount)) errors[row.key] = "Enter an amount above zero.";
+      else if (!activeIds.includes(row.payerId) || row.people.some((uid) => !activeIds.includes(uid))) errors[row.key] = "A person has left this space. Update the payer or people for this row.";
+      else if (preview.problem || !preview.shares) errors[row.key] = preview.problem || "Check this split.";
     }
-    setRowErrors(errs);
-    if (Object.keys(errs).length) return setError(`Fix ${Object.keys(errs).length === 1 ? "the marked row" : "the marked rows"} first.`);
+    setRowErrors(errors);
+    const first = filled.find((row) => errors[row.key]);
+    if (first) { editSplit(first.key); return setError("Nothing saved yet. Fix the marked rows first."); }
     setError("");
     save.mutate(filled, {
-      onSuccess: (res) => {
-        clearDraft(meId, space.id);
-        toast(`Saved ${res.expenses.length} ${res.expenses.length === 1 ? "expense" : "expenses"}`);
-        onDone();
-      },
+      onSuccess: (result) => { clearDraft(meId, space.id); toast(`Saved ${result.expenses.length} expenses`); onDone(); },
       onError: (err) => {
         const index = err instanceof ApiError ? (err.details as { index?: number } | undefined)?.index : undefined;
         const row = index !== undefined ? filled[index] : undefined;
-        if (row) setRowErrors({ [row.key]: errorMessage(err).replace(/^Row \d+: /, "") });
+        if (row) { setRowErrors({ [row.key]: errorMessage(err).replace(/^Row \d+: /, "") }); setSelectedKey(row.key); }
         setError(row ? "Nothing was saved. Fix the marked row and try again." : errorMessage(err));
       },
     });
   };
-
-  const discard = () => {
-    clearDraft(meId, space.id);
-    toast("Draft discarded");
-    onDone();
-  };
-
-  const togglePerson = (ids: string[], id: string) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
-
-  return (
-    <section className="card formcard bulk" aria-labelledby="bulk-title">
-      <div className="sechead">
-        <h2 id="bulk-title">Add several expenses</h2>
-        <span className="draftnote">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
-          Draft kept on this device
-        </span>
+  const close = useModalForm(quickStatus.dirty, save.isPending || quickStatus.busy, onDone);
+  const nameOf = (uid: string) => space.members.find((person) => person.id === uid)?.name ?? "Former member";
+  const peopleLabel = (row: DraftRow) => row.selectedGroups?.length
+    ? row.selectedGroups.map((group) => group.name).join(" + ")
+    : row.people.length ? row.people.slice(0, 2).map(nameOf).join(", ") + (row.people.length > 2 ? ` +${row.people.length - 2}` : "") : "Choose people";
+  return <section className="bulk-transaction-editor" aria-label="Add several expenses">
+    <fieldset className="bulk-date-bar" disabled={save.isPending || quickStatus.busy}><DateField compact label="Date for these expenses" value={draft.date} onChange={(date) => { setDraft({ ...draft, date, savedAt: Date.now() }); setError(""); }} month={month} /><span className="draftnote">Draft saved on this device</span></fieldset>
+    <div className="bulk-workspace">
+      <div className="transaction-table-area">
+        <fieldset className="transaction-table" disabled={save.isPending || quickStatus.busy}><legend className="sr-only">Expense rows</legend>
+          <div className="transaction-head" aria-hidden="true"><span>#</span><span>Expense</span><span>Amount</span><span>Paid by</span><span>People / split</span><span /></div>
+          <ol className="transaction-rows" aria-label="Expenses to add">{draft.rows.map((row, index) => <li key={row.key} className={`transaction-row${selected?.key === row.key ? " on" : ""}${rowErrors[row.key] ? " bad" : ""}`}>
+            <span className="transaction-number">{index + 1}</span>
+            <input type="text" id={`bulk-desc-${row.key}`} className="transaction-description" aria-label={`Row ${index + 1}: expense`} placeholder="Milk, cab, dinner…" maxLength={100} value={row.description} onFocus={() => setSelectedKey(row.key)} onChange={(event) => updateRow(row.key, { description: event.target.value })} />
+            <div className="amtwrap transaction-amount"><span>₹</span><input type="text" inputMode="decimal" aria-label={`Row ${index + 1}: amount`} placeholder="0" value={row.amount} onFocus={() => setSelectedKey(row.key)} onChange={(event) => updateRow(row.key, { amount: event.target.value })} onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+              event.preventDefault(); if (index === draft.rows.length - 1) addRow(); else document.getElementById(`bulk-desc-${draft.rows[index + 1]!.key}`)?.focus();
+            }} /></div>
+            <select className="transaction-payer" aria-label={`Row ${index + 1}: paid by`} value={row.payerId} onFocus={() => setSelectedKey(row.key)} onChange={(event) => updateRow(row.key, { payerId: event.target.value })}>{!activeIds.includes(row.payerId) && <option value={row.payerId}>{nameOf(row.payerId)} (left)</option>}{active.map((person) => <option key={person.id} value={person.id}>{person.name}{person.id === meId ? " (you)" : ""}</option>)}</select>
+            <button type="button" className="transaction-split" title={peopleLabel(row)} aria-label={`Row ${index + 1}: edit split`} aria-pressed={selected?.key === row.key} aria-controls="bulk-split-editor" onClick={() => editSplit(row.key)}><span>{peopleLabel(row)}</span><small>{SPLIT_TYPES.find((type) => type.type === row.splitType)?.label} · {row.people.length} {row.people.length === 1 ? "person" : "people"}</small></button>
+            <button type="button" className="iconbtn transaction-remove" aria-label={`Remove row ${index + 1}`} onClick={() => removeRow(row.key)}>×</button>
+            {rowErrors[row.key] && <p className="transaction-error err" role="alert">{rowErrors[row.key]}</p>}
+          </li>)}</ol>
+        </fieldset>
+        <div className="transaction-add"><button type="button" className="btn" onClick={addRow} disabled={save.isPending || quickStatus.busy || draft.rows.length >= 50}>+ Add expense</button><span>Enter in an amount moves to the next row.</span></div>
       </div>
-
-      <div className="bulkdefaults">
-        <DateField label="Date for all" value={draft.date} onChange={(date) => update({ date })} month={month} />
-        <div className="field">
-          <label htmlFor="bulk-payer">Paid by (default)</label>
-          <select id="bulk-payer" value={draft.payerId} onChange={(e) => update({ payerId: e.target.value })}>
-            {active.map((m) => <option key={m.id} value={m.id}>{m.name}{m.id === meId ? " (you)" : ""}</option>)}
-          </select>
-        </div>
-        <div className="field">
-          <div className="legend">Split equally between (default)</div>
-          {quickPicks.length > 0 && (
-            <div className="groupbtns" style={{ marginBottom: 6 }}>
-              <span className="lbl">Groups</span>
-              {quickPicks.map((g) => (
-                <button key={g.id} type="button" className="btn small" onClick={() => update({ people: g.ids })}>{g.name}</button>
-              ))}
-              <button type="button" className="btn small" onClick={() => update({ people: active.map((m) => m.id) })}>Everyone</button>
-            </div>
-          )}
-          <div className="picks" role="group" aria-label="Default people to split between">
-            {active.map((m) => (
-              <label key={m.id} className="pick">
-                <input type="checkbox" checked={draft.people.includes(m.id)} onChange={() => update({ people: togglePerson(draft.people, m.id) })} />
-                <Chip id={m.id} small /><span>{m.name}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <ol className="bulkrows" aria-label="Expenses to add">
-        <li className="bulkrow head" aria-hidden="true">
-          <span>#</span><span>What</span><span>Amount</span><span>Paid by</span><span>Split</span><span></span>
-        </li>
-        {draft.rows.map((r, i) => {
-          const people = r.people ?? draft.people;
-          const err = rowErrors[r.key];
-          return (
-            <li key={r.key} className={`bulkrow${err ? " bad" : ""}`}>
-              <span className="n">{i + 1}</span>
-              <input
-                id={`bulk-desc-${r.key}`}
-                className="desc"
-                type="text"
-                aria-label={`Row ${i + 1}: what`}
-                placeholder="Milk, cab, dinner…"
-                maxLength={100}
-                value={r.description}
-                onChange={(e) => updateRow(r.key, { description: e.target.value })}
-              />
-              <div className="amtwrap amount">
-                <span>₹</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  aria-label={`Row ${i + 1}: amount`}
-                  placeholder="0"
-                  value={r.amount}
-                  onChange={(e) => updateRow(r.key, { amount: e.target.value })}
-                  onKeyDown={(e) => {
-                    // Enter on the last row starts a new one.
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      if (i === draft.rows.length - 1) addRow();
-                      else document.getElementById(`bulk-desc-${draft.rows[i + 1]!.key}`)?.focus();
-                    }
-                  }}
-                />
-              </div>
-              <select className="payer" aria-label={`Row ${i + 1}: paid by`} value={r.payerId ?? ""} onChange={(e) => updateRow(r.key, { payerId: e.target.value || null })}>
-                <option value="">{nameOf(draft.payerId)}{draft.payerId === meId ? " (you)" : ""}</option>
-                {active.filter((m) => m.id !== draft.payerId).map((m) => <option key={m.id} value={m.id}>{m.name}{m.id === meId ? " (you)" : ""}</option>)}
-              </select>
-              <button
-                type="button"
-                className="btn small split"
-                aria-expanded={openPeople === r.key}
-                aria-label={`Row ${i + 1}: split between ${peopleLabel(people)}`}
-                onClick={() => setOpenPeople(openPeople === r.key ? null : r.key)}
-              >
-                <span>{peopleLabel(people)}{r.people ? " *" : ""}</span><span aria-hidden="true">▾</span>
-              </button>
-              <button type="button" className="iconbtn" aria-label={`Remove row ${i + 1}`} onClick={() => removeRow(r.key)}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-              </button>
-              {openPeople === r.key && (
-                <div className="bulkpeople">
-                  <div className="picks" role="group" aria-label={`Row ${i + 1}: people`}>
-                    {active.map((m) => (
-                      <label key={m.id} className="pick">
-                        <input type="checkbox" checked={people.includes(m.id)} onChange={() => updateRow(r.key, { people: togglePerson(people, m.id) })} />
-                        <Chip id={m.id} small /><span>{m.name}</span>
-                      </label>
-                    ))}
-                  </div>
-                  {r.people && <button type="button" className="linkbtn" style={{ marginTop: 6, fontSize: 13 }} onClick={() => updateRow(r.key, { people: null })}>Use the default people</button>}
-                </div>
-              )}
-              {err && <span className="err rowerr" role="alert">{err}</span>}
-            </li>
-          );
-        })}
-      </ol>
-
-      <div className="formfoot">
-        <button type="button" className="btn" onClick={addRow}>+ Add row</button>
-        <span className="grow">
-          {filled.length
-            ? `${filled.length} ${filled.length === 1 ? "expense" : "expenses"} · ${formatMoney(total)}${isRealDate(draft.date) ? ` · ${dateLabel(draft.date)}` : ""}`
-            : "Press Enter in an amount to start the next row."}
-          {draft.rows.some((r) => r.people) && " · * has its own split"}
-        </span>
-      </div>
-      <div className="formfoot" style={{ marginTop: 10 }}>
-        <button type="button" className="btn primary" disabled={save.isPending || !filled.length} onClick={submit}>
-          {save.isPending ? "Saving…" : `Save all${filled.length ? ` (${filled.length})` : ""}`}
-        </button>
-        <button type="button" className="btn" onClick={onDone}>Close, keep draft</button>
-        <ConfirmButton className="btn danger" confirmLabel="Confirm discard" onConfirm={discard} disabled={save.isPending}>Discard draft</ConfirmButton>
-        <span className="err" role="alert">{error}</span>
-      </div>
-    </section>
-  );
+      <aside id="bulk-split-editor" tabIndex={-1} className="transaction-split-editor" aria-label="Selected transaction split">{selected && <>
+        <SplitEditor key={selected.key} title={`Split · ${selected.description.trim() || `Row ${draft.rows.findIndex((row) => row.key === selected.key) + 1}`}`} people={active} selection={selected} onChange={(selection) => updateRow(selected.key, selection)} amount={parseMoney(selected.amount)} seed={selected.key} meId={meId} groups={quickPicks} spaceId={space.id} canConfigure={space.myRole === "owner"} onConfigStatus={setQuickStatus} disabled={save.isPending || quickStatus.busy} />
+        <button type="button" className="btn copy-split" disabled={save.isPending || quickStatus.busy || (draft.rows.length >= 50 && selected.key === draft.rows.at(-1)?.key)} onClick={copyToNext}>Copy split to next expense</button>
+      </>}</aside>
+    </div>
+    {error && <div className="editor-error err" role="alert">{error}</div>}
+    <footer className="editor-footer"><div className="bulk-summary"><span><strong>{filled.length}</strong> expenses · <strong>{formatMoney(total)}</strong></span><ConfirmButton className="linkbtn" confirmLabel="Confirm discard" disabled={save.isPending || quickStatus.busy} onConfirm={() => { clearDraft(meId, space.id); toast("Draft discarded"); onDone(); }}>Discard draft</ConfirmButton></div><div className="editor-actions"><button type="button" className="btn" onClick={close} disabled={save.isPending || quickStatus.busy}>Close, keep draft</button><button type="button" className="btn primary" onClick={submit} disabled={save.isPending || quickStatus.busy || !filled.length}>{save.isPending ? "Saving…" : `Save all (${filled.length})`}</button></div></footer>
+  </section>;
 }

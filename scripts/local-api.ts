@@ -5,10 +5,12 @@ import { serve } from "@hono/node-server";
 import { createApp } from "../server/app";
 import { emulatorVerifier } from "../server/auth";
 import { dbFromPglite, migrate } from "./migrations";
+import { ensureLocalTestAccount } from "./local-test-account";
 
 const projectId = process.env.FIREBASE_PROJECT_ID ?? "demo-expense-tracker";
 const pg = new PGlite(process.env.LOCAL_DB_DIR ?? ".local-db");
 await migrate(pg);
+await ensureLocalTestAccount();
 
 const app = createApp({ db: () => dbFromPglite(pg), verifyToken: emulatorVerifier(projectId) });
 serve({ fetch: app.fetch, port: 8788, hostname: "127.0.0.1" }, ({ port }) => {

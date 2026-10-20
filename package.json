@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "import:firebase": "tsx scripts/import-firebase.ts",
     "seed:local": "tsx scripts/seed-local.ts",
+    "seed:local:user": "tsx scripts/seed-local-user.ts",
     "ci": "tsc --noEmit && vitest run && vite build"
   },
   "dependencies": {

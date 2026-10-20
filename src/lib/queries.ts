@@ -7,7 +7,7 @@
 import { QueryClient, useIsFetching, useMutation, useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { persistQueryClient } from "@tanstack/react-query-persist-client";
 import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
-import type { SpaceDetail } from "../../shared/api";
+import type { Person, SpaceDetail } from "../../shared/api";
 import { api, ApiError } from "./api";
 
 const MINUTE = 60_000;
@@ -30,8 +30,10 @@ export const queryClient = new QueryClient({
 export const keys = {
   me: ["me"] as const,
   spaces: ["spaces"] as const,
-  groups: ["groups"] as const,
+  groups: (id: string) => ["space", id, "groups"] as const,
+  quickActions: (id: string) => ["space", id, "quick-actions"] as const,
   people: ["people"] as const,
+  tokens: ["tokens"] as const,
   space: (id: string) => ["space", id] as const,
   detail: (id: string) => ["space", id, "detail"] as const,
   balances: (id: string, month?: string) => ["space", id, "balances", month ?? "all"] as const,
@@ -41,9 +43,25 @@ export const keys = {
 };
 
 export const useMe = () => useQuery({ queryKey: keys.me, queryFn: api.me });
+// Always fresh when opened: "last used" and revocations matter more than saving a call.
+export const useTokens = () => useQuery({ queryKey: keys.tokens, queryFn: api.tokens, staleTime: 0 });
 export const useSpaces = () => useQuery({ queryKey: keys.spaces, queryFn: api.spaces });
-export const useGroups = () => useQuery({ queryKey: keys.groups, queryFn: api.groups });
+export const useGroups = (id: string | null) => useQuery({ queryKey: keys.groups(id ?? ""), queryFn: () => api.groups(id!), enabled: !!id });
+export const useQuickActions = (id: string) => useQuery({ queryKey: keys.quickActions(id), queryFn: () => api.quickActions(id) });
 export const usePeople = () => useQuery({ queryKey: keys.people, queryFn: api.people });
+export const useDirectory = () => useQuery({ queryKey: [...keys.people, "directory"], queryFn: api.directory });
+export function useSelectablePeople() {
+  const contacts = usePeople();
+  const directory = useDirectory();
+  const map = new Map<string, Person>(contacts.data?.map((p) => [p.id, p]));
+  directory.data?.forEach((p) => map.set(p.id, p));
+  return {
+    data: [...map.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    isPending: contacts.isPending || directory.isPending,
+    error: directory.error ?? contacts.error,
+    refetch: () => Promise.all([contacts.refetch(), directory.refetch()]),
+  };
+}
 export const useSpace = (id: string | null) =>
   useQuery({ queryKey: keys.detail(id ?? ""), queryFn: () => api.space(id!), enabled: !!id });
 export const useBalances = (id: string, month?: string) =>
@@ -56,7 +74,7 @@ export const useSettlements = (id: string, month?: string) =>
   useQuery({ queryKey: keys.settlements(id, month), queryFn: () => api.settlements(id, month) });
 
 /** What a write changed. Only those queries are refetched (and only if on screen; others are marked stale). */
-export type Touch = "detail" | "expenses" | "settlements" | "balances" | "months" | "spaces" | "groups" | "people" | "everything";
+export type Touch = "detail" | "expenses" | "settlements" | "balances" | "months" | "spaces" | "groups" | "quickActions" | "people" | "everything";
 
 function keysFor(spaceId: string | null, touch: Touch): QueryKey[] {
   const s = spaceId ?? "";
@@ -67,7 +85,8 @@ function keysFor(spaceId: string | null, touch: Touch): QueryKey[] {
     case "balances": return [["space", s, "balances"]];
     case "months": return [keys.months(s)];
     case "spaces": return [keys.spaces];
-    case "groups": return [keys.groups];
+    case "groups": return [keys.groups(s)];
+    case "quickActions": return [keys.quickActions(s)];
     case "people": return [keys.people];
     case "everything": return [keys.space(s), keys.spaces, keys.people];
   }
@@ -105,7 +124,6 @@ export function refreshAll(spaceId: string | null) {
   return Promise.all([
     spaceId ? queryClient.invalidateQueries({ queryKey: keys.space(spaceId) }) : Promise.resolve(),
     queryClient.invalidateQueries({ queryKey: keys.spaces }),
-    queryClient.invalidateQueries({ queryKey: keys.groups }),
     queryClient.invalidateQueries({ queryKey: keys.people }),
     queryClient.invalidateQueries({ queryKey: keys.me }),
   ]);
@@ -114,7 +132,7 @@ export function refreshAll(spaceId: string | null) {
 export const useIsRefreshing = () => useIsFetching() > 0;
 
 // ── Saved cache, one per signed-in user ────────────────────────────────────────────────
-const CACHE_VERSION = "v1"; // bump when an API response shape changes
+const CACHE_VERSION = "v3"; // bump when an API response shape changes
 const cacheKey = (uid: string) => `expense-tracker:cache:${uid}`;
 
 function storage(): Storage | undefined {

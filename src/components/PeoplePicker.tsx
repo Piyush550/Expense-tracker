@@ -1,90 +1,51 @@
-import { useMemo, useState } from "react";
-import type { Person } from "../../shared/api";
-import { usePeople } from "../lib/queries";
+import { useEffect, useId, useState } from "react";
+import type { Person, PersonInvite } from "../../shared/api";
+import { errorMessage } from "../lib/api";
+import { useSelectablePeople } from "../lib/queries";
+import { PeopleSelect } from "./PeopleSelect";
 import { isEmail } from "./emails";
 
-/**
- * Pick people you already know (from your spaces and groups) by name, and invite anyone new
- * by email. `exclude` hides people who are already in.
- */
-export function PeoplePicker({ ids, onIds, emails, onEmails, exclude = [], legend }: {
-  ids: string[];
-  onIds(ids: string[]): void;
-  emails: string[];
-  onEmails(emails: string[]): void;
-  exclude?: string[];
-  legend: string;
+/** Name-first directory selection, with named invitations for people who have not joined. */
+export function PeoplePicker({ ids, onIds, invites, onInvites, exclude = [], legend, extraPeople = [], disabled = false, onPendingChange }: {
+  ids: string[]; onIds(ids: string[]): void; invites: PersonInvite[]; onInvites(invites: PersonInvite[]): void;
+  exclude?: string[]; legend: string; extraPeople?: Person[]; disabled?: boolean; onPendingChange?(pending: boolean): void;
 }) {
-  const people = usePeople();
-  const [filter, setFilter] = useState("");
-  const [invite, setInvite] = useState("");
-  const [inviteError, setInviteError] = useState("");
-  const list = useMemo(() => {
-    const term = filter.trim().toLowerCase();
-    return (people.data ?? []).filter(
-      (p: Person) => !exclude.includes(p.id) && (!term || p.name.toLowerCase().includes(term) || (p.email ?? "").includes(term)),
-    );
-  }, [people.data, filter, exclude]);
-
-  const toggle = (id: string) => onIds(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  const people = useSelectablePeople();
+  const id = useId();
+  const [inviting, setInviting] = useState(false);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => { onPendingChange?.(!!(name.trim() || email.trim())); }, [name, email, onPendingChange]);
+  const map = new Map(extraPeople.map((p) => [p.id, p]));
+  people.data.forEach((p) => map.set(p.id, p));
+  const options = [...map.values()].filter((p) => !exclude.includes(p.id)).sort((a, b) => a.name.localeCompare(b.name));
   const addInvite = () => {
-    const e = invite.trim().toLowerCase();
-    if (!isEmail(e)) return setInviteError("That is not an email address.");
-    const known = people.data?.find((p) => p.email === e);
-    if (known) {
-      if (!ids.includes(known.id)) onIds([...ids, known.id]);
-    } else if (!emails.includes(e)) onEmails([...emails, e]);
-    setInvite("");
-    setInviteError("");
+    const n = name.trim(); const em = email.trim().toLowerCase();
+    if (!n) return setError("Enter their name so everyone recognises them.");
+    if (!isEmail(em)) return setError("Enter the email they will use to sign in.");
+    const known = options.find((p) => p.email === em);
+    if (known) { if (!ids.includes(known.id)) onIds([...ids, known.id]); }
+    else if (invites.some((p) => p.email === em)) return setError("That person is already on the invitation list.");
+    else onInvites([...invites, { name: n, email: em }]);
+    setName(""); setEmail(""); setError(""); setInviting(false);
   };
-
-  return (
-    <div className="field">
-      <div className="legend">{legend}</div>
-      {(people.data?.length ?? 0) > 8 && (
-        <input type="search" className="pickfilter" aria-label="Find a person" placeholder="Find a person" value={filter} onChange={(e) => setFilter(e.target.value)} />
-      )}
-      {people.isPending ? (
-        <p className="note" style={{ margin: 0 }}>Loading your people…</p>
-      ) : list.length ? (
-        <div className="picks" role="group" aria-label={legend}>
-          {list.map((p) => (
-            <label key={p.id} className="pick" title={p.email ?? undefined}>
-              <input type="checkbox" checked={ids.includes(p.id)} onChange={() => toggle(p.id)} />
-              <span>{p.name}</span>
-            </label>
-          ))}
-        </div>
-      ) : (
-        <p className="note" style={{ margin: 0 }}>
-          {people.data?.length ? "Everyone you know is already in." : "People you share a space or group with show up here. Invite someone new below."}
-        </p>
-      )}
-      {emails.length > 0 && (
-        <div className="picks" style={{ marginTop: 8 }}>
-          {emails.map((e) => (
-            <span key={e} className="personpill">
-              {e} <span className="tag">new</span>
-              <button type="button" className="linkbtn" aria-label={`Remove ${e}`} onClick={() => onEmails(emails.filter((x) => x !== e))}>×</button>
-            </span>
-          ))}
-        </div>
-      )}
-      <div className="inline" style={{ marginTop: 8 }}>
-        <div className="field">
-          <label htmlFor="pp-invite" className="muted" style={{ fontWeight: 500 }}>Someone new? Invite by email</label>
-          <input
-            id="pp-invite"
-            type="email"
-            placeholder="friend@gmail.com"
-            value={invite}
-            onChange={(e) => setInvite(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addInvite(); } }}
-          />
-        </div>
-        <button type="button" className="btn" onClick={addInvite}>Add</button>
+  return <div className="people-picker">
+    {people.error ? <div className="banner warn">{errorMessage(people.error)} <button type="button" className="linkbtn" onClick={() => void people.refetch()}>Try again</button></div>
+      : people.isPending ? <p className="note">Loading people…</p> : null}
+    <PeopleSelect people={options} ids={ids} onIds={onIds} label={legend} disabled={disabled || people.isPending || !!people.error} />
+    {invites.length > 0 && <div className="invitation-list" aria-label="People to invite">
+      {invites.map((p) => <div key={p.email} className="invitation-row"><span className="person-initial" aria-hidden="true">{p.name.slice(0, 2)}</span><span className="stack"><strong>{p.name}</strong><small>Will join when they sign in</small></span><span className="tag">New</span><button type="button" className="iconbtn" disabled={disabled} aria-label={`Remove invitation for ${p.name}`} onClick={() => onInvites(invites.filter((v) => v.email !== p.email))}>×</button></div>)}
+    </div>}
+    {inviting ? <div className="invite-panel">
+      <div className="invite-panel-title"><strong>Invite someone new</strong><button type="button" className="linkbtn" onClick={() => { setInviting(false); setName(""); setEmail(""); setError(""); }}>Cancel</button></div>
+      <p>Use their name and the email they will sign in with. Their account will link automatically.</p>
+      <div className="invite-fields">
+        <div className="field"><label htmlFor={`${id}-name`}>Their name</label><input id={`${id}-name`} type="text" maxLength={40} placeholder="e.g. Priya" value={name} disabled={disabled} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); document.getElementById(`${id}-email`)?.focus(); } }} autoFocus /></div>
+        <div className="field"><label htmlFor={`${id}-email`}>Sign-in email</label><input id={`${id}-email`} type="email" autoCapitalize="none" spellCheck={false} placeholder="priya@gmail.com" value={email} disabled={disabled} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addInvite(); } }} /></div>
       </div>
-      <div className="err" role="alert">{inviteError}</div>
-    </div>
-  );
+      {error && <p className="err" role="alert">{error}</p>}<button type="button" className="btn" disabled={disabled} onClick={addInvite}>Add to invitation list</button>
+      <small className="muted">Add this person to the invitation list before saving. No invitation email is sent.</small>
+    </div> : <button type="button" className="invite-link" disabled={disabled} onClick={() => setInviting(true)}><span aria-hidden="true">＋</span> Someone missing? Invite by name and email</button>}
+  </div>;
 }

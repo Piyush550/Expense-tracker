@@ -66,8 +66,14 @@ describe("auth", () => {
   });
 
   it("requires JSON bodies", async () => {
-    const res = await api.call(asha, "PATCH", "/me");
-    expect(res.status).toBe(415);
+    expect((await api.call(asha, "PATCH", "/me")).status).toBe(400); // no body at all
+    const token = encodeURIComponent(JSON.stringify(asha));
+    const form = await api.app.request("/api/me", {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${token}`, "content-type": "text/plain" },
+      body: "name=Asha",
+    });
+    expect(form.status).toBe(415);
   });
 });
 
@@ -333,38 +339,43 @@ describe("permissions", () => {
   });
 });
 
-describe("groups (reusable lists of people)", () => {
-  it("are shared with their members, editable only by their maker, and fill a space in one go", async () => {
-    const made = await api.call<Group>(asha, "POST", "/groups", { name: "Boys Flat", memberEmails: [bala.email, chen.email] });
+describe("groups belonging to a space", () => {
+  it("are shared with all space members, managed by owners, and unavailable globally", async () => {
+    const space = await makeSpace();
+    const balaId = idOf(space, bala.email);
+    const chenId = idOf(space, chen.email);
+    const path = `/spaces/${space.id}/groups`;
+    const made = await api.call<Group>(asha, "POST", path, { name: "Boys Flat", memberIds: [balaId, chenId] });
     expect(made.status).toBe(201);
-    expect(made.body.members.map((m) => m.name).sort()).toEqual(["asha", "bala", "chen"]);
-    expect(made.body.canEdit).toBe(true);
+    expect(made.body.spaceId).toBe(space.id);
+    expect(made.body.members.map((m) => m.name).sort()).toEqual(["bala", "chen"]);
+    expect(made.body.members.every((m) => m.email === null)).toBe(true);
+    expect(made.body.canEdit).toBe(true); // The owner need not participate in the group.
 
-    // Bala is in it, so Bala sees it but cannot change it; Dev sees nothing.
-    const balaView = await api.call<Group[]>(bala, "GET", "/groups");
+    const balaView = await api.call<Group[]>(bala, "GET", path);
     expect(balaView.body).toEqual([expect.objectContaining({ id: made.body.id, canEdit: false })]);
-    expect((await api.call(bala, "PATCH", `/groups/${made.body.id}`, { name: "Ours" })).status).toBe(403);
-    expect((await api.call<Group[]>(dev, "GET", "/groups")).body).toEqual([]);
+    expect((await api.call(bala, "PATCH", `${path}/${made.body.id}`, { name: "Ours" })).status).toBe(403);
+    expect((await api.call(dev, "GET", path)).status).toBe(404);
 
-    // A space built from the group has all three people.
-    const space = await api.call<SpaceDetail>(asha, "POST", "/spaces", { name: "Groceries", groupIds: [made.body.id] });
-    expect(space.body.members.filter((m) => m.active)).toHaveLength(3);
+    const edited = await api.call<Group>(asha, "PATCH", `${path}/${made.body.id}`, { memberIds: [balaId] });
+    expect(edited.body.members.map((m) => m.name)).toEqual(["bala"]);
+    // Chen remains a space member, so they can still use a group they do not participate in.
+    expect((await api.call<Group[]>(chen, "GET", path)).body).toHaveLength(1);
 
-    // Change the group, then add it to another space: only the new person is added.
-    const edited = await api.call<Group>(asha, "PATCH", `/groups/${made.body.id}`, { memberEmails: [bala.email, dev.email] });
-    expect(edited.body.members.map((m) => m.name).sort()).toEqual(["asha", "bala", "dev"]);
-    const add = await api.call<SpaceDetail>(asha, "POST", `/spaces/${space.body.id}/members`, { groupId: made.body.id });
-    expect(add.body.members.filter((m) => m.active).map((m) => m.name).sort()).toEqual(["asha", "bala", "chen", "dev"]);
-    expect((await api.call(asha, "POST", `/spaces/${space.body.id}/members`, { groupId: made.body.id })).status).toBe(409);
+    const other = await makeSpace(dev, []);
+    expect((await api.call(dev, "PATCH", `/spaces/${other.id}/groups/${made.body.id}`, { name: "Wrong space" })).status).toBe(404);
+    expect((await api.call(dev, "PUT", `/spaces/${other.id}/quick-actions`, { mode: "custom", groupIds: [made.body.id] })).status).toBe(422);
+    // The retired global endpoints and cross-space group membership inputs cannot be used.
+    expect((await api.call(asha, "GET", "/groups")).status).toBe(404);
+    expect((await api.call(asha, "POST", "/groups", { name: "Global", memberIds: [balaId] })).status).toBe(404);
+    expect((await api.call(asha, "PATCH", `/groups/${made.body.id}`, { name: "Global" })).status).toBe(404);
+    expect((await api.call(asha, "DELETE", `/groups/${made.body.id}`)).status).toBe(404);
+    expect((await api.call(asha, "POST", "/spaces", { name: "Wrong", groupIds: [made.body.id] })).status).toBe(422);
+    expect((await api.call(asha, "POST", `/spaces/${space.id}/members`, { groupId: made.body.id })).status).toBe(422);
 
-    // Someone who cannot see a group cannot use it.
-    const devSpace = await api.call<SpaceDetail>(dev, "POST", "/spaces", { name: "Dev's" });
-    const other = await api.call<Group>(chen, "POST", "/groups", { name: "Chen's", memberEmails: [] });
-    expect((await api.call(dev, "POST", `/spaces/${devSpace.body.id}/members`, { groupId: other.body.id })).status).toBe(404);
-
-    expect((await api.call(bala, "DELETE", `/groups/${made.body.id}`)).status).toBe(403);
-    expect((await api.call(asha, "DELETE", `/groups/${made.body.id}`)).status).toBe(204);
-    expect((await api.call<Group[]>(bala, "GET", "/groups")).body).toEqual([]);
+    expect((await api.call(bala, "DELETE", `${path}/${made.body.id}`)).status).toBe(403);
+    expect((await api.call(asha, "DELETE", `${path}/${made.body.id}`)).status).toBe(204);
+    expect((await api.call<Group[]>(bala, "GET", path)).body).toEqual([]);
   });
 });
 
@@ -400,7 +411,7 @@ describe("recurring spaces, month by month", () => {
 });
 
 describe("people you know", () => {
-  it("lists people you share a space or group with, and adds them without an email", async () => {
+  it("lists people you share a space with, and groups only those space members", async () => {
     const g = await makeSpace(); // Asha's space with Bala and Chen invited
     const balaId = idOf(g, bala.email);
     const chenId = idOf(g, chen.email);
@@ -420,14 +431,18 @@ describe("people you know", () => {
     expect((await api.call(asha, "POST", `/spaces/${trip.body.id}/members`, { userId: devId })).status).toBe(404);
     expect((await api.call(asha, "POST", "/spaces", { name: "Nope", memberIds: [devId] })).status).toBe(404);
 
-    const grp = await api.call<Group>(asha, "POST", "/groups", { name: "Flatmates", memberIds: [balaId] });
-    expect(grp.body.members.map((m) => m.name).sort()).toEqual(["asha", "bala"]);
-    const swapped = await api.call<Group>(asha, "PATCH", `/groups/${grp.body.id}`, { memberIds: [chenId], memberEmails: [dev.email] });
-    expect(swapped.body.members.map((m) => m.name).sort()).toEqual(["asha", "chen", "dev"]);
-    // Bala was taken out, so the group is no longer visible to Bala at all.
-    expect((await api.call(bala, "PATCH", `/groups/${grp.body.id}`, { memberIds: [] })).status).toBe(404);
-    // Dev is in Asha's group now, so they know each other.
-    expect((await api.call<Person[]>(dev, "GET", "/people")).body.map((p) => p.name).sort()).toEqual(["asha", "chen"]);
+    const path = `/spaces/${g.id}/groups`;
+    const grp = await api.call<Group>(asha, "POST", path, { name: "Flatmates", memberIds: [balaId] });
+    expect(grp.body.members.map((m) => m.name)).toEqual(["bala"]);
+    // A group cannot bring an outsider into a space. The owner adds the person explicitly.
+    expect((await api.call(asha, "PATCH", `${path}/${grp.body.id}`, { memberIds: [chenId, devId] })).status).toBe(422);
+    expect((await api.call(asha, "POST", `/spaces/${g.id}/members`, { directoryUserId: devId })).status).toBe(201);
+    const swapped = await api.call<Group>(asha, "PATCH", `${path}/${grp.body.id}`, { memberIds: [chenId, devId] });
+    expect(swapped.body.members.map((m) => m.name).sort()).toEqual(["chen", "dev"]);
+    // Space membership controls visibility, and space ownership controls editing.
+    expect((await api.call<Group[]>(bala, "GET", path)).body).toHaveLength(1);
+    expect((await api.call(bala, "PATCH", `${path}/${grp.body.id}`, { memberIds: [balaId] })).status).toBe(403);
+    expect((await api.call<Person[]>(dev, "GET", "/people")).body.map((p) => p.name).sort()).toEqual(["asha", "bala", "chen"]);
   });
 });
 

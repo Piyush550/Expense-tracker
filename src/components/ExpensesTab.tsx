@@ -7,6 +7,7 @@ import { api, errorMessage } from "../lib/api";
 import { downloadCsv } from "../lib/export";
 import { keys, useExpenses, useSettlements } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { Modal } from "./Modal";
 import { BulkAdd } from "./BulkAdd";
 import { ExpenseForm } from "./ExpenseForm";
 import { clearDraft, loadDraft, rowHasContent } from "../lib/drafts";
@@ -28,7 +29,6 @@ export function ExpensesTab({ space, me, month }: { space: SpaceDetail; me: Me; 
   const defaultDate = !month || month === currentMonth() ? todayIso() : `${month}-01`;
   const open = (next: Expense | "new" | "bulk") => {
     setEditing(next);
-    window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const [search, setSearch] = useState("");
   const [paidBy, setPaidBy] = useState("");
@@ -64,6 +64,15 @@ export function ExpensesTab({ space, me, month }: { space: SpaceDetail; me: Me; 
     }
   };
 
+  const exportFromMenu = (all: boolean, button: HTMLButtonElement) => {
+    const menu = button.closest("details");
+    if (menu) {
+      menu.open = false;
+      menu.querySelector("summary")?.focus();
+    }
+    void exportCsv(all);
+  };
+
   return (
     <>
       <dl className="stats">
@@ -84,28 +93,30 @@ export function ExpensesTab({ space, me, month }: { space: SpaceDetail; me: Me; 
         </div>
       )}
 
-      {editing === "bulk" ? (
-        <BulkAdd space={space} meId={me.id} defaultDate={defaultDate} month={month} onDone={() => setEditing(null)} />
-      ) : editing ? (
-        <ExpenseForm
-          key={editing === "new" ? "new" : editing.id}
-          space={space}
-          meId={me.id}
-          expense={editing === "new" ? null : editing}
-          defaultDate={defaultDate}
-          month={month}
-          onDone={() => setEditing(null)}
-        />
-      ) : null}
+      {editing && <Modal wide compact title={editing === "bulk" ? "Add several expenses" : editing === "new" ? "Add an expense" : "Edit expense"} description={space.name} onClose={() => setEditing(null)}>
+        {editing === "bulk" ? <BulkAdd space={space} meId={me.id} defaultDate={defaultDate} month={month} onDone={() => setEditing(null)} /> : <ExpenseForm key={editing === "new" ? "new" : editing.id} space={space} meId={me.id} expense={editing === "new" ? null : editing} defaultDate={defaultDate} month={month} onDone={() => setEditing(null)} />}
+      </Modal>}
 
       <section className="sec">
         <div className="sechead">
           <h2>Expenses{month ? ` in ${monthLabel(month)}` : ""}</h2>
-          <div className="headbtns">
-            <button type="button" className="btn small" onClick={() => exportCsv(false)}>Download {month ? "month" : "all"} (CSV)</button>
-            {month && <button type="button" className="btn small" onClick={() => exportCsv(true)}>Download everything (CSV)</button>}
-            <button type="button" className="btn" onClick={() => open("bulk")}>Add several</button>
+          <div className="headbtns expenseactions">
             <button type="button" className="btn primary" onClick={() => open("new")}>+ Add expense</button>
+            <button type="button" className="btn" onClick={() => open("bulk")}>Add several</button>
+            <details className="exportmenu" onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                e.currentTarget.open = false;
+                e.currentTarget.querySelector("summary")?.focus();
+              }
+            }}>
+              <summary className="btn">Export <span aria-hidden="true">⌄</span></summary>
+              <div className="exportoptions">
+                <button type="button" className="btn small" onClick={(e) => exportFromMenu(false, e.currentTarget)}>Download {month ? "month" : "all"} (CSV)</button>
+                {month && <button type="button" className="btn small" onClick={(e) => exportFromMenu(true, e.currentTarget)}>Download everything (CSV)</button>}
+              </div>
+            </details>
           </div>
         </div>
         <div className="filters" role="search">

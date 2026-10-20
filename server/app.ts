@@ -1,21 +1,25 @@
-// The HTTP API. Every route below /api requires a verified Firebase sign-in, and every
-// space-scoped route checks membership before touching data.
+// The HTTP API. Every route below /api requires a verified Firebase sign-in or a personal
+// token (which cannot delete, merge people or manage keys). Every space-scoped route checks
+// membership before touching data.
 import { Hono, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import type { Balances, Expense, Group, Me, MonthSummary, Person, Settlement, SpaceDetail } from "../shared/api";
+import type { ApiToken, Balances, Expense, Me, MonthSummary, NewApiToken, Person, QuickExpenseResult, QuickOptions, Settlement, SpaceDetail } from "../shared/api";
 import { activeMemberIds, assertUuid, requireMember, requireOwner } from "./access";
 import type { VerifyToken } from "./auth";
 import { pgCode, type Db, type Queryable } from "./db";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "./errors";
 import { findExpense, getSettlement, listExpenses, listSettlements, replaceShares, sharesFor } from "./expenses";
-import { findGroup, listGroups, requireGroupOwner, setGroupMembers } from "./groups";
+import { createSpaceGroup, findSpaceGroup, listSpaceGroups, loadQuickActions, saveQuickActions, setSpaceGroupMembers } from "./groups";
 import { addEmailToSpace, addToSpace, ensureSpaceKeepsOwner, listSpaces, loadSpace } from "./spaces";
 import { type Ctx, type Env, parse, readBody } from "./http";
 import { memberNet, monthlySummary, spaceBalances } from "./ledger";
-import { listContacts, requireContacts } from "./people";
+import { listContacts, registeredDirectory, requireContacts, requireRegistered } from "./people";
 import * as s from "./schemas";
 import type { CreateExpense } from "./schemas";
 import { mergeUsers, resolveUser } from "./users";
+import { findPreset, quickAmount, quickDate, quickMessage, quickPresets } from "./quick";
+import { createToken, deleteToken, listTokens, regenerateToken, revokeToken, TOKEN_PREFIX, tokenMayCall, updateToken, userForToken } from "./tokens";
+import { randomUUID } from "node:crypto";
 
 export interface AppDeps {
   db: () => Db;
@@ -40,16 +44,29 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   );
 
   app.use("*", async (c, next) => {
-    if (["POST", "PATCH", "PUT"].includes(c.req.method) && !c.req.header("content-type")?.startsWith("application/json")) {
+    // A body must be JSON; a body-less POST (regenerate, revoke) is fine.
+    const hasBody = c.req.raw.body !== null && c.req.header("content-length") !== "0";
+    if (["POST", "PATCH", "PUT"].includes(c.req.method) && hasBody && !c.req.header("content-type")?.startsWith("application/json")) {
       throw new HttpError(415, "unsupported_media_type", "Send JSON with Content-Type: application/json.");
     }
     const header = c.req.header("authorization") ?? "";
     const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
     if (!token) throw unauthorized("Sign in to continue.");
-    const claims = await verifyToken(token);
     const db = getDb();
     c.set("db", db);
-    c.set("user", await resolveUser(db, claims));
+    if (token.startsWith(TOKEN_PREFIX)) {
+      // A personal token: signs in as the user who made it, for everything but destructive routes.
+      const user = await userForToken(db, token);
+      if (!user) throw unauthorized("This key is not valid any more. Create a new one in the app under Settings → iPhone shortcut.");
+      if (!tokenMayCall(c.req.method, c.req.path)) {
+        throw forbidden("token_scope", "A key can't delete, merge people or manage keys. Do that in the app.");
+      }
+      c.set("via", "token");
+      c.set("user", user);
+    } else {
+      c.set("via", "session");
+      c.set("user", await resolveUser(db, await verifyToken(token)));
+    }
     await next();
   });
 
@@ -62,6 +79,76 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   app.use("/spaces/:id", memberOnly);
   app.use("/spaces/:id/*", memberOnly);
 
+  // ── Personal tokens (managed only from a normal sign-in) ──────────────────────────────
+  app.use("/tokens", async (c, next) => {
+    if (c.var.via !== "session") throw forbidden("token_scope", "Sign in to the app to manage keys.");
+    await next();
+  });
+  app.use("/tokens/*", async (c, next) => {
+    if (c.var.via !== "session") throw forbidden("token_scope", "Sign in to the app to manage keys.");
+    await next();
+  });
+
+  app.get("/tokens", async (c) => c.json<ApiToken[]>(await listTokens(c.var.db, c.var.user.id)));
+
+  app.post("/tokens", async (c) => {
+    const { name, lifetimeDays } = await readBody(c, s.createToken);
+    const created = await c.var.db.transaction((tx) => createToken(tx, c.var.user.id, name, lifetimeDays));
+    return c.json<NewApiToken>(created, 201);
+  });
+
+  app.post("/tokens/:tokenId/regenerate", async (c) => {
+    const id = assertUuid(c.req.param("tokenId"), "That token");
+    return c.json<NewApiToken>(await c.var.db.transaction((tx) => regenerateToken(tx, c.var.user.id, id)));
+  });
+
+  app.patch("/tokens/:tokenId", async (c) => {
+    const id = assertUuid(c.req.param("tokenId"), "That token");
+    const patch = await readBody(c, s.updateToken);
+    return c.json<ApiToken>(await c.var.db.transaction((tx) => updateToken(tx, c.var.user.id, id, patch)));
+  });
+
+  app.post("/tokens/:tokenId/revoke", async (c) => {
+    const id = assertUuid(c.req.param("tokenId"), "That token");
+    return c.json<ApiToken>(await revokeToken(c.var.db, c.var.user.id, id));
+  });
+
+  app.delete("/tokens/:tokenId", async (c) => {
+    const id = assertUuid(c.req.param("tokenId"), "That token");
+    await deleteToken(c.var.db, c.var.user.id, id);
+    return c.body(null, 204);
+  });
+
+  // ── Phone shortcut: presets and quick equal-split add ─────────────────────────────────
+  app.get("/quick/options", async (c) => {
+    const presets = await quickPresets(c.var.db, c.var.user);
+    return c.json<QuickOptions>({ labels: presets.map((p) => p.label), presets });
+  });
+
+  app.post("/quick/expense", async (c) => {
+    const body = await readBody(c, s.quickExpense);
+    const me = c.var.user;
+    const preset = findPreset(await quickPresets(c.var.db, me), body.preset);
+    const amountPaise = quickAmount(body.amount);
+    const title = (body.title?.trim() || "Expense").slice(0, 100);
+    const spentOn = quickDate(body.date);
+    const result = await c.var.db.transaction(async (tx) => {
+      await requireMember(tx, preset.spaceId, me.id);
+      return createOne(tx, preset.spaceId, me, {
+        id: body.requestId ?? randomUUID(),
+        description: title,
+        amountPaise,
+        payerId: me.id,
+        splitType: "equal",
+        spentOn,
+        remarks: "",
+        splits: preset.people.map((p) => ({ userId: p.id })),
+      }, await activeMemberIds(tx, preset.spaceId));
+    });
+    const net = await memberNet(c.var.db, preset.spaceId, me.id);
+    return c.json<QuickExpenseResult>({ message: quickMessage(amountPaise, title, preset, net), expense: result.expense }, result.created ? 201 : 200);
+  });
+
   // ── Me ────────────────────────────────────────────────────────────────────────────────
   app.get("/me", (c) => c.json(c.var.user));
 
@@ -73,6 +160,7 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
 
   // People you already share a space or group with: the "add someone" dropdowns.
   app.get("/people", async (c) => c.json<Person[]>(await listContacts(c.var.db, c.var.user.id)));
+  app.get("/people/directory", async (c) => c.json<Person[]>(await registeredDirectory(c.var.db, c.var.user.id)));
 
   // ── Spaces ────────────────────────────────────────────────────────────────────────────
   app.get("/spaces", async (c) => c.json(await listSpaces(c.var.db, c.var.user.id)));
@@ -89,11 +177,13 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
       const spaceId = rows[0]!.id;
       await tx.query("INSERT INTO space_members (space_id, user_id, role) VALUES ($1, $2, 'owner')", [spaceId, me.id]);
       await requireContacts(tx, me.id, body.memberIds);
+      await requireRegistered(tx, body.directoryIds);
       for (const userId of new Set(body.memberIds)) if (userId !== me.id) await addToSpace(tx, spaceId, userId);
+      for (const userId of new Set(body.directoryIds)) if (userId !== me.id) await addToSpace(tx, spaceId, userId);
       for (const email of new Set(body.memberEmails)) await addEmailToSpace(tx, spaceId, email);
-      for (const groupId of new Set(body.groupIds)) {
-        for (const p of (await findGroup(tx, groupId, me.id)).members) await addToSpace(tx, spaceId, p.id);
-      }
+      for (const invite of body.memberInvites) await addEmailToSpace(tx, spaceId, invite.email, invite.name);
+      for (const group of body.initialGroups) await createSpaceGroup(tx, spaceId, me.id, group);
+      if (body.quickGroupIds.length) await saveQuickActions(tx, spaceId, { mode: "custom", groupIds: body.quickGroupIds });
       return loadSpace(tx, spaceId, "owner");
     });
     return c.json<SpaceDetail>(detail, 201);
@@ -139,17 +229,23 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const me = c.var.user;
     const detail = await c.var.db.transaction(async (tx) => {
       await requireOwner(tx, spaceId, me.id);
-      if ("userId" in body) {
+      if ("memberIds" in body) {
+        await requireContacts(tx, me.id, body.memberIds);
+        await requireRegistered(tx, body.directoryIds);
+        let added = 0;
+        for (const userId of new Set([...body.memberIds, ...body.directoryIds])) if (await addToSpace(tx, spaceId, userId)) added++;
+        for (const invite of body.memberInvites) if (await addEmailToSpace(tx, spaceId, invite.email, invite.name)) added++;
+        if (!added) throw conflict("already_member", "Those people are already in the space.");
+      } else if ("directoryUserId" in body) {
+        await requireRegistered(tx, [body.directoryUserId]);
+        if (!(await addToSpace(tx, spaceId, body.directoryUserId))) throw conflict("already_member", "That person is already in the space.");
+      } else if ("userId" in body) {
         await requireContacts(tx, me.id, [body.userId]);
         if (!(await addToSpace(tx, spaceId, body.userId))) throw conflict("already_member", "That person is already in the space.");
       } else if ("email" in body) {
         if (!(await addEmailToSpace(tx, spaceId, body.email, body.name))) {
           throw conflict("already_member", "That person is already in the space.");
         }
-      } else {
-        let added = 0;
-        for (const p of (await findGroup(tx, body.groupId, me.id)).members) if (await addToSpace(tx, spaceId, p.id)) added++;
-        if (!added) throw conflict("already_member", "Everyone in that group is already in the space.");
       }
       return loadSpace(tx, spaceId, "owner");
     });
@@ -394,55 +490,84 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     return c.body(null, 204);
   });
 
-  // ── Groups (reusable lists of people, across spaces) ──────────────────────────────────
-  app.get("/groups", async (c) => c.json<Group[]>(await listGroups(c.var.db, c.var.user.id)));
+  // ── Groups belonging to a space and shared shortcuts ─────────────────────────────
+  app.get("/spaces/:id/groups", async (c) => c.json(await listSpaceGroups(c.var.db, c.req.param("id"), c.var.user.id)));
 
-  app.post("/groups", async (c) => {
-    const body = await readBody(c, s.createGroup);
-    const me = c.var.user;
+  app.post("/spaces/:id/groups", async (c) => {
+    const spaceId = c.req.param("id");
+    const body = await readBody(c, s.spaceGroup);
     const group = await c.var.db.transaction(async (tx) => {
-      const { rows } = await tx.query<{ id: string }>("INSERT INTO groups (name, created_by) VALUES ($1, $2) RETURNING id", [body.name, me.id]);
-      await setGroupMembers(tx, rows[0]!.id, me.id, body.memberEmails, body.memberIds);
-      return findGroup(tx, rows[0]!.id, me.id);
+      await tx.query("SELECT id FROM spaces WHERE id = $1 FOR UPDATE", [spaceId]);
+      await requireOwner(tx, spaceId, c.var.user.id);
+      const groupId = await createSpaceGroup(tx, spaceId, c.var.user.id, body);
+      return findSpaceGroup(tx, spaceId, groupId, c.var.user.id);
     });
     return c.json(group, 201);
   });
 
-  app.patch("/groups/:id", async (c) => {
-    const groupId = assertUuid(c.req.param("id"), "That group");
-    const body = await readBody(c, s.updateGroup);
-    const me = c.var.user;
+  app.patch("/spaces/:id/groups/:groupId", async (c) => {
+    const spaceId = c.req.param("id");
+    const groupId = assertUuid(c.req.param("groupId"), "That group");
+    const body = await readBody(c, s.updateSpaceGroup);
     const group = await c.var.db.transaction(async (tx) => {
-      await requireGroupOwner(tx, groupId, me.id);
-      if (body.name !== undefined) await tx.query("UPDATE groups SET name = $2, updated_at = now() WHERE id = $1", [groupId, body.name]);
-      if (body.memberEmails !== undefined || body.memberIds !== undefined) {
-        await setGroupMembers(tx, groupId, me.id, body.memberEmails ?? [], body.memberIds ?? []);
-      }
-      return findGroup(tx, groupId, me.id);
+      await tx.query("SELECT id FROM spaces WHERE id = $1 FOR UPDATE", [spaceId]);
+      await requireOwner(tx, spaceId, c.var.user.id);
+      await findSpaceGroup(tx, spaceId, groupId, c.var.user.id);
+      await tx.query("UPDATE groups SET name = COALESCE($2, name), updated_at = now() WHERE id = $1 AND space_id = $3", [groupId, body.name ?? null, spaceId]);
+      if (body.memberIds) await setSpaceGroupMembers(tx, spaceId, groupId, body.memberIds);
+      return findSpaceGroup(tx, spaceId, groupId, c.var.user.id);
     });
     return c.json(group);
   });
 
-  app.delete("/groups/:id", async (c) => {
-    const groupId = assertUuid(c.req.param("id"), "That group");
-    await requireGroupOwner(c.var.db, groupId, c.var.user.id);
-    await c.var.db.query("DELETE FROM groups WHERE id = $1", [groupId]);
+  app.delete("/spaces/:id/groups/:groupId", async (c) => {
+    const spaceId = c.req.param("id");
+    const groupId = assertUuid(c.req.param("groupId"), "That group");
+    await c.var.db.transaction(async (tx) => {
+      await tx.query("SELECT id FROM spaces WHERE id = $1 FOR UPDATE", [spaceId]);
+      await requireOwner(tx, spaceId, c.var.user.id);
+      await findSpaceGroup(tx, spaceId, groupId, c.var.user.id);
+      await tx.query("DELETE FROM groups WHERE id = $1 AND space_id = $2", [groupId, spaceId]);
+    });
     return c.body(null, 204);
   });
 
+  app.get("/spaces/:id/quick-actions", async (c) => c.json(await loadQuickActions(c.var.db, c.req.param("id"))));
+  app.put("/spaces/:id/quick-actions", async (c) => {
+    const spaceId = c.req.param("id");
+    const body = await readBody(c, s.quickActions);
+    const config = await c.var.db.transaction(async (tx) => {
+      await tx.query("SELECT id FROM spaces WHERE id = $1 FOR UPDATE", [spaceId]);
+      await requireOwner(tx, spaceId, c.var.user.id);
+      await saveQuickActions(tx, spaceId, body);
+      return loadQuickActions(tx, spaceId);
+    });
+    return c.json(config);
+  });
+
   // ── Errors ────────────────────────────────────────────────────────────────────────────
-  app.notFound((c) => c.json({ error: { code: "not_found", message: "No such API route." } }, 404));
+  // Every error reply is { error: { code, message } }. The phone shortcut's last step shows the
+  // reply's top-level `message`, so its two routes also get a readable one: without it a failed
+  // add would pop up a blank notification and look like nothing happened.
+  const fail = (c: Ctx, status: HttpError["status"], code: string, message: string, details?: unknown) => {
+    const body: Record<string, unknown> = { error: { code, message, details } };
+    const path = c.req.path.replace(/\/+$/, "");
+    if (path === "/api/quick/expense") body.message = `Couldn't add the expense: ${message}`;
+    else if (path === "/api/quick/options") body.message = `Couldn't load your choices: ${message}`;
+    return c.json(body, status);
+  };
+
+  app.notFound((c) => fail(c as Ctx, 404, "not_found", "No such API route."));
 
   app.onError((err, c) => {
-    if (err instanceof HttpError) {
-      return c.json({ error: { code: err.code, message: err.message, details: err.details } }, err.status);
-    }
+    const ctx = c as Ctx;
+    if (err instanceof HttpError) return fail(ctx, err.status, err.code, err.message, err.details);
     const code = pgCode(err);
-    if (code === "23505") return c.json({ error: { code: "conflict", message: "That already exists. Reload and try again." } }, 409);
-    if (code === "23503") return c.json({ error: { code: "conflict", message: "Something this refers to no longer exists." } }, 409);
-    if (code === "40001" || code === "40P01") return c.json({ error: { code: "retry", message: "The server was busy. Try again." } }, 409);
+    if (code === "23505") return fail(ctx, 409, "conflict", "That already exists. Reload and try again.");
+    if (code === "23503") return fail(ctx, 409, "conflict", "Something this refers to no longer exists.");
+    if (code === "40001" || code === "40P01") return fail(ctx, 409, "retry", "The server was busy. Try again.");
     console.error("Unhandled API error", c.req.method, c.req.path, err);
-    return c.json({ error: { code: "internal", message: "Something went wrong on our side." } }, 500);
+    return fail(ctx, 500, "internal", "Something went wrong on our side.");
   });
 
   return app;

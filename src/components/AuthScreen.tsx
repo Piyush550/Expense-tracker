@@ -65,19 +65,21 @@ export function AuthScreen() {
   const title = mode === "signup" ? "Create your account" : mode === "reset" ? "Reset your password" : "Sign in";
   return (
     <div className="card authcard">
-      <h3>{title}</h3>
+      <span className="eyebrow">{mode === "signin" ? "Welcome back" : "Shared costs, made simple"}</span>
+      <h2 className="authtitle">{title}</h2>
       {mode !== "reset" && (
         <>
-          <p className="muted" style={{ margin: "6px 0 14px" }}>
+          <p className="authintro">
             {mode === "signup" ? "Use Google, or an email and password." : "Use Google, or the email you signed up with."}
           </p>
           <button type="button" className="btn googlebtn" disabled={busy} onClick={() => run(auth.signInWithGoogle)}>
             <GoogleIcon /> Continue with Google
           </button>
+          <p className="auth-security"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="9" cy="8" r="3" /><path d="M3 21v-3a6 6 0 0 1 12 0v3M17 5a3 3 0 0 1 0 6M19 15a5 5 0 0 1 2 5" /></svg> Your Google name helps friends find you.</p>
           <div className="divider">or with email</div>
         </>
       )}
-      {mode === "reset" && <p className="muted" style={{ margin: "6px 0 0" }}>We will email you a link to choose a new password.</p>}
+      {mode === "reset" && <p className="authintro">We will email you a link to choose a new password.</p>}
       <form className="authform" onSubmit={submit} noValidate>
         {mode === "signup" && (
           <div className="field">
@@ -87,11 +89,14 @@ export function AuthScreen() {
         )}
         <div className="field">
           <label htmlFor="a-email">Email</label>
-          <input id="a-email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input id="a-email" type="email" inputMode="email" autoComplete="email" autoCapitalize="none" spellCheck={false} value={email} onChange={(e) => setEmail(e.target.value)} />
         </div>
         {mode !== "reset" && (
           <div className="field">
-            <label htmlFor="a-pw">Password</label>
+            <div className="fieldlabel">
+              <label htmlFor="a-pw">Password</label>
+              {mode === "signin" && <button type="button" className="linkbtn" disabled={busy} onClick={() => switchTo("reset")}>Forgot password?</button>}
+            </div>
             <input id="a-pw" type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={mode === "signup" ? "At least 6 characters" : undefined} />
           </div>
         )}
@@ -101,20 +106,13 @@ export function AuthScreen() {
             <input id="a-pw2" type="password" autoComplete="new-password" value={password2} onChange={(e) => setPassword2(e.target.value)} />
           </div>
         )}
-        <div className="formfoot">
-          <button type="submit" className="btn primary" disabled={busy}>
-            {mode === "signup" ? "Create account" : mode === "reset" ? "Send reset link" : "Sign in"}
-          </button>
-          {mode === "signin" && (
-            <button type="button" className="linkbtn" onClick={() => switchTo("reset")}>
-              Forgot password?
-            </button>
-          )}
-        </div>
         <div className="err" role="alert">{error}</div>
-        <p className="authmsg">{info}</p>
+        <button type="submit" className="btn primary authsubmit" disabled={busy}>
+          {busy ? "Please wait…" : mode === "signup" ? "Create account" : mode === "reset" ? "Send reset link" : "Sign in"}
+        </button>
+        <p className="authmsg" role="status">{info}</p>
       </form>
-      <p className="note">
+      <p className="note authswitch">
         {mode === "signin" ? (
           <>New here? <button type="button" className="linkbtn" onClick={() => switchTo("signup")}>Create an account</button></>
         ) : mode === "signup" ? (
@@ -154,7 +152,7 @@ export function VerifyEmailScreen() {
 
   return (
     <div className="card authcard">
-      <h3>Verify your email</h3>
+      <h2 className="authtitle">Verify your email</h2>
       <p className="muted" style={{ margin: "6px 0 0" }}>
         We sent a verification link to <strong>{auth.user?.email}</strong>. Open it, then come back here. Check your spam folder if it is not in your inbox.
       </p>
@@ -192,36 +190,41 @@ const POINTS = [
 export function AuthShell({ status }: { status: AuthStatus }) {
   return (
     <div className="authshell">
-      <aside className="authside">
+      <header className="authheader">
         <Brand />
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <h1>Split shared costs. Settle up with the fewest payments.</h1>
-          <p>Log who paid and who shared it. Expense Tracker keeps the balance sheet and tells everyone exactly what to pay.</p>
-        </div>
-        <ul className="authpoints">
-          {POINTS.map((p) => (
-            <li key={p.title}>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={p.icon} /></svg>
-              <span><strong>{p.title}</strong><span>{p.text}</span></span>
-            </li>
-          ))}
-        </ul>
-        <div className="authsample" aria-label="Example settle-up">
-          <div><span>Example · settle up</span><span>2 payments</span></div>
-          <div><span>Chen pays Bala</span><span className="amt">₹773.17</span></div>
-          <div><span>Chen pays Asha</span><span className="amt">₹339.66</span></div>
-        </div>
-      </aside>
-      <main className="authmain">
-        <div className="authtools"><ThemeSwitch /></div>
-        {status === "loading" ? (
-          <div className="card authcard muted">Checking your sign-in…</div>
-        ) : status === "unverified" ? (
-          <VerifyEmailScreen />
-        ) : (
-          <AuthScreen />
-        )}
-      </main>
+        <ThemeSwitch />
+      </header>
+      <div className="authlayout">
+        <aside className="authside">
+          <div className="authpitch">
+            <span className="eyebrow">A little less owing. A lot more living.</span>
+            <h1>Split shared costs.<br />Settle up simply.</h1>
+            <p>Log who paid and who shared it. Expense Tracker keeps the balance sheet and tells everyone exactly what to pay.</p>
+          </div>
+          <ul className="authpoints">
+            {POINTS.map((p) => (
+              <li key={p.title}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={p.icon} /></svg>
+                <span><strong>{p.title}</strong><span>{p.text}</span></span>
+              </li>
+            ))}
+          </ul>
+          <div className="authsample" aria-label="Example settle-up">
+            <div><span>Example · settle up</span><span>2 payments</span></div>
+            <div><span>Chen pays Bala</span><span className="amt">₹773.17</span></div>
+            <div><span>Chen pays Asha</span><span className="amt">₹339.66</span></div>
+          </div>
+        </aside>
+        <main className="authmain">
+          {status === "loading" ? (
+            <div className="card authcard muted">Checking your sign-in…</div>
+          ) : status === "unverified" ? (
+            <VerifyEmailScreen />
+          ) : (
+            <AuthScreen />
+          )}
+        </main>
+      </div>
     </div>
   );
 }

@@ -16,7 +16,7 @@ export function currentMonth(d = new Date()): string {
 export function shiftMonth(ym: string, delta: number): string {
   const [y, m] = ym.split("-").map(Number) as [number, number];
   const d = new Date(y, m - 1 + delta, 1);
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+  return `${String(d.getFullYear()).padStart(4, "0")}-${pad2(d.getMonth() + 1)}`;
 }
 
 /** First day of the month and first day of the next month, for half-open range queries. */

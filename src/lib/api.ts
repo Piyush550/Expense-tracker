@@ -1,8 +1,8 @@
 // Typed calls to /api. Every request carries the Firebase ID token; a 401 retries once
 // with a freshly minted token (e.g. right after the email was verified).
 import type {
-  ApiErrorBody, Balances, Expense, ExpenseInput, Group, Me, MonthSummary, Person, Role, Settlement, SettlementInput, SpaceDetail,
-  SpaceKind, SpaceSummary,
+  ApiErrorBody, Balances, Expense, ExpenseInput, Group, Me, MonthSummary, Person, PeopleInput, Role, Settlement, SettlementInput, SpaceDetail,
+  SpaceKind, SpaceSummary, InitialSpaceGroup, SpaceQuickActions, ApiToken, NewApiToken,
 } from "../../shared/api";
 import { auth } from "./firebase";
 
@@ -50,20 +50,29 @@ const q = (month?: string) => (month ? `?month=${encodeURIComponent(month)}` : "
 
 export const api = {
   me: () => request<Me>("GET", "/me"),
+
+  // Personal tokens for the iPhone shortcut.
+  tokens: () => request<ApiToken[]>("GET", "/tokens"),
+  createToken: (name: string, lifetimeDays: number | null) => request<NewApiToken>("POST", "/tokens", { name, lifetimeDays }),
+  regenerateToken: (id: string) => request<NewApiToken>("POST", `/tokens/${id}/regenerate`),
+  updateToken: (id: string, patch: { name?: string; lifetimeDays?: number | null }) => request<ApiToken>("PATCH", `/tokens/${id}`, patch),
+  revokeToken: (id: string) => request<ApiToken>("POST", `/tokens/${id}/revoke`),
+  deleteToken: (id: string) => request<void>("DELETE", `/tokens/${id}`),
   updateMe: (name: string) => request<Me>("PATCH", "/me", { name }),
 
   spaces: () => request<SpaceSummary[]>("GET", "/spaces"),
   space: (id: string) => request<SpaceDetail>("GET", `/spaces/${id}`),
   people: () => request<Person[]>("GET", "/people"),
+  directory: () => request<Person[]>("GET", "/people/directory"),
 
-  createSpace: (input: { name: string; kind: SpaceKind; memberIds: string[]; memberEmails: string[]; groupIds: string[] }) =>
+  createSpace: (input: { name: string; kind: SpaceKind; initialGroups?: InitialSpaceGroup[]; quickGroupIds?: string[]; memberEmails?: string[] } & PeopleInput) =>
     request<SpaceDetail>("POST", "/spaces", input),
   updateSpace: (id: string, patch: { name?: string; kind?: SpaceKind; simplifyDebts?: boolean }) =>
     request<SpaceDetail>("PATCH", `/spaces/${id}`, patch),
   deleteSpace: (id: string) => request<void>("DELETE", `/spaces/${id}`),
 
   addMember: (spaceId: string, who: { userId: string } | { email: string }) => request<SpaceDetail>("POST", `/spaces/${spaceId}/members`, who),
-  addGroupToSpace: (spaceId: string, groupId: string) => request<SpaceDetail>("POST", `/spaces/${spaceId}/members`, { groupId }),
+  addMembers: (spaceId: string, people: PeopleInput) => request<SpaceDetail>("POST", `/spaces/${spaceId}/members`, people),
   setRole: (spaceId: string, userId: string, role: Role) => request<SpaceDetail>("PATCH", `/spaces/${spaceId}/members/${userId}`, { role }),
   removeMember: (spaceId: string, userId: string) => request<void>("DELETE", `/spaces/${spaceId}/members/${userId}`),
   mergeMember: (spaceId: string, userId: string, intoUserId: string) =>
@@ -85,10 +94,12 @@ export const api = {
     request<Settlement>("POST", `/spaces/${spaceId}/settlements`, { id, ...input }),
   deleteSettlement: (id: string) => request<void>("DELETE", `/settlements/${id}`),
 
-  groups: () => request<Group[]>("GET", "/groups"),
-  createGroup: (name: string, memberIds: string[], memberEmails: string[]) => request<Group>("POST", "/groups", { name, memberIds, memberEmails }),
-  updateGroup: (id: string, patch: { name?: string; memberIds?: string[]; memberEmails?: string[] }) => request<Group>("PATCH", `/groups/${id}`, patch),
-  deleteGroup: (id: string) => request<void>("DELETE", `/groups/${id}`),
+  groups: (spaceId: string) => request<Group[]>("GET", `/spaces/${spaceId}/groups`),
+  createGroup: (spaceId: string, name: string, memberIds: string[]) => request<Group>("POST", `/spaces/${spaceId}/groups`, { name, memberIds }),
+  updateGroup: (spaceId: string, id: string, patch: { name?: string; memberIds?: string[] }) => request<Group>("PATCH", `/spaces/${spaceId}/groups/${id}`, patch),
+  deleteGroup: (spaceId: string, id: string) => request<void>("DELETE", `/spaces/${spaceId}/groups/${id}`),
+  quickActions: (spaceId: string) => request<SpaceQuickActions>("GET", `/spaces/${spaceId}/quick-actions`),
+  saveQuickActions: (spaceId: string, config: SpaceQuickActions) => request<SpaceQuickActions>("PUT", `/spaces/${spaceId}/quick-actions`, config),
 };
 
 export function errorMessage(err: unknown): string {

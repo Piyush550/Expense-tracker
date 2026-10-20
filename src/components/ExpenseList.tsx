@@ -22,6 +22,9 @@ export function ExpenseList({ space, meId, expenses, onEdit }: {
 
   return (
     <div className="card logcard">
+      <div className="loghead" aria-hidden="true">
+        <span>Date</span><span>Expense</span><span>Paid by</span><span>Split</span><span className="r">Amount</span><span className="r">Actions</span>
+      </div>
       <ul className="log">
         {expenses.map((e) => {
           const ids = e.shares.map((s) => s.userId);

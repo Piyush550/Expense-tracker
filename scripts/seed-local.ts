@@ -44,8 +44,8 @@ async function main() {
   for (let i = 0; i < tokens.length; i++) ids.push((await (await fetch(`${API}/me`, { headers: as(i) })).json()).id);
 
   const [asha, bala, chen, dev] = ids as [string, string, string, string];
-  const flatmates = await post<{ id: string }>(`${API}/groups`, { name: "Boys Flat", memberEmails: [DEV_ACCOUNTS[1]!.email, DEV_ACCOUNTS[2]!.email] }, as(0));
-  const flat = await post<{ id: string }>(`${API}/spaces`, { name: "Flat 4B", kind: "recurring", groupIds: [flatmates.id] }, as(0));
+  const flat = await post<{ id: string }>(`${API}/spaces`, { name: "Flat 4B", kind: "recurring", directoryIds: [bala, chen] }, as(0));
+  await post(`${API}/spaces/${flat.id}/groups`, { name: "Boys Flat", memberIds: [asha, bala, chen] }, as(0));
   const trip = await post<{ id: string }>(`${API}/spaces`, { name: "Goa trip", kind: "one_time", memberEmails: [DEV_ACCOUNTS[1]!.email, DEV_ACCOUNTS[3]!.email] }, as(0));
 
   const now = currentMonth();

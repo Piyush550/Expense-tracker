@@ -1,57 +1,28 @@
 import { useState, type FormEvent } from "react";
-import type { Member, SpaceDetail } from "../../shared/api";
+import type { Member, PeopleInput, PersonInvite, SpaceDetail } from "../../shared/api";
 import { api, errorMessage } from "../lib/api";
-import { setSpaceDetail, useGroups, usePeople, useSpaceMutation } from "../lib/queries";
+import { setSpaceDetail, useSelectablePeople, useSpaceMutation } from "../lib/queries";
+import { setParams } from "../lib/url-state";
 import { useToast } from "../lib/toast";
 import { ConfirmButton } from "./ConfirmButton";
-import { isEmail } from "./emails";
+import { Modal, useModalForm } from "./Modal";
+import { PeoplePicker } from "./PeoplePicker";
+import { peopleInput } from "../lib/people";
 import { Chip } from "./People";
 
 export function Members({ space, meId, onLeft }: { space: SpaceDetail; meId: string; onLeft(): void }) {
   const toast = useToast();
   const owner = space.myRole === "owner";
-  const groups = useGroups();
-  const people = usePeople();
-  const [pick, setPick] = useState("");
-  const [inviting, setInviting] = useState(false);
-  const [email, setEmail] = useState("");
-  const [error, setError] = useState("");
+  const [adding, setAdding] = useState(false);
   // Member changes return the updated space, which goes straight into the cache.
-  const add = useSpaceMutation(space.id, (who: { userId: string } | { email: string }) => api.addMember(space.id, who), ["spaces", "people"], setSpaceDetail);
-  const addGroup = useSpaceMutation(space.id, (groupId: string) => api.addGroupToSpace(space.id, groupId), ["spaces", "people"], setSpaceDetail);
   const setRole = useSpaceMutation(space.id, (v: { userId: string; role: "owner" | "member" }) => api.setRole(space.id, v.userId, v.role), [], setSpaceDetail);
-  const remove = useSpaceMutation(space.id, (userId: string) => api.removeMember(space.id, userId), ["detail", "spaces"]);
+  const remove = useSpaceMutation(space.id, (userId: string) => api.removeMember(space.id, userId), ["detail", "spaces", "groups"]);
   const merge = useSpaceMutation(space.id, (v: { userId: string; into: string }) => api.mergeMember(space.id, v.userId, v.into), ["everything"], setSpaceDetail);
   const fail = (err: unknown) => toast(errorMessage(err));
 
   const registered = space.members.filter((m) => m.active && m.registered);
   const active = space.members.filter((m) => m.active);
   const former = space.members.filter((m) => !m.active);
-
-  const inSpace = new Set(active.map((m) => m.id));
-  const candidates = (people.data ?? []).filter((p) => !inSpace.has(p.id));
-
-  const addPerson = (e: FormEvent) => {
-    e.preventDefault();
-    if (!pick) return setError("Choose someone to add.");
-    setError("");
-    const name = candidates.find((p) => p.id === pick)?.name ?? "them";
-    add.mutate({ userId: pick }, {
-      onSuccess: () => { setPick(""); toast(`Added ${name}`); },
-      onError: (err) => setError(errorMessage(err)),
-    });
-  };
-
-  const invite = (e: FormEvent) => {
-    e.preventDefault();
-    const em = email.trim().toLowerCase();
-    if (!isEmail(em)) return setError("Enter their email address.");
-    setError("");
-    add.mutate({ email: em }, {
-      onSuccess: () => { setEmail(""); setInviting(false); toast("Invited. They join by signing in with that email."); },
-      onError: (err) => setError(errorMessage(err)),
-    });
-  };
 
   const row = (m: Member) => (
     <li key={m.id} className={`memberrow${m.active ? "" : " left"}`}>
@@ -98,61 +69,40 @@ export function Members({ space, meId, onLeft }: { space: SpaceDetail; meId: str
 
   return (
     <section className="sec">
-      <div className="sechead"><h2>Members ({active.length})</h2></div>
+      <div className="sechead"><h2>Members ({active.length})</h2><div className="headbtns"><button type="button" className="btn" onClick={() => setParams({ v: null, t: "groups" })}>Groups</button>{owner && <button type="button" className="btn primary" onClick={() => setAdding(true)}>＋ Add people</button>}</div></div>
       <div className="card" style={{ padding: 0 }}>
         <ul className="memberlist">{active.map(row)}{former.map(row)}</ul>
       </div>
       {owner ? (
         <div className="card" style={{ marginTop: 12 }}>
-          <form className="inline" onSubmit={addPerson} noValidate>
-            <div className="field">
-              <label htmlFor="m-person">Add someone you know</label>
-              <select id="m-person" value={pick} onChange={(e) => setPick(e.target.value)} disabled={!candidates.length}>
-                <option value="">{people.isPending ? "Loading…" : candidates.length ? "Choose a person" : "Everyone you know is already here"}</option>
-                {candidates.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}{p.email ? ` · ${p.email}` : ""}</option>
-                ))}
-              </select>
-            </div>
-            <button type="submit" className="btn primary" disabled={add.isPending || !pick}>Add</button>
-          </form>
-          {inviting ? (
-            <form className="inline" onSubmit={invite} noValidate style={{ marginTop: 12 }}>
-              <div className="field">
-                <label htmlFor="m-email">Invite someone new by email</label>
-                <input id="m-email" type="email" placeholder="friend@gmail.com" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
-              </div>
-              <button type="submit" className="btn" disabled={add.isPending}>Invite</button>
-              <button type="button" className="btn" onClick={() => { setInviting(false); setError(""); }}>Cancel</button>
-            </form>
-          ) : (
-            <p className="note" style={{ marginTop: 10 }}>
-              Not in the list? <button type="button" className="linkbtn" onClick={() => setInviting(true)}>Invite someone new by email</button>
-            </p>
-          )}
-          <div className="err" role="alert" style={{ marginTop: 8 }}>{error}</div>
-          {!!groups.data?.length && (
-            <div className="groupbtns" style={{ marginTop: 12 }}>
-              <span className="lbl">Add everyone from a group</span>
-              {groups.data.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  className="btn small"
-                  disabled={addGroup.isPending}
-                  title={g.members.map((p) => p.name).join(", ")}
-                  onClick={() => addGroup.mutate(g.id, { onSuccess: () => toast(`Added ${g.name}`), onError: fail })}
-                >
-                  {g.name}
-                </button>
-              ))}
-            </div>
-          )}
-          <p className="note">The list shows everyone you share a space or group with. People can leave or be removed only once their balance is zero.</p>
+          <p className="note">Search all registered people by name. Their email addresses stay private in the directory. People can leave or be removed only once their balance is zero.</p>
         </div>
       ) : (
         <p className="note">Only the space owner can add or remove people. You can add and edit expenses.</p>
       )}
+    {adding && <Modal compact title="Add people" description={`Bring people into ${space.name}.`} onClose={() => setAdding(false)}><AddPeople space={space} onDone={() => setAdding(false)} /></Modal>}
     </section>
   );
+}
+
+function AddPeople({ space, onDone }: { space: SpaceDetail; onDone(): void }) {
+  const toast = useToast();
+  const people = useSelectablePeople();
+  const [ids, setIds] = useState<string[]>([]);
+  const [invites, setInvites] = useState<PersonInvite[]>([]);
+  const [error, setError] = useState("");
+  const [invitationPending, setInvitationPending] = useState(false);
+  const add = useSpaceMutation(space.id, (input: PeopleInput) => api.addMembers(space.id, input), ["spaces", "people"], setSpaceDetail);
+  const cancel = useModalForm(invitationPending || ids.length > 0 || invites.length > 0, add.isPending, onDone);
+  const submit = (e: FormEvent) => {
+    e.preventDefault(); if (add.isPending || people.isPending || people.error) return;
+    if (invitationPending) return setError("Add or cancel the pending invitation first.");
+    if (!ids.length && !invites.length) return setError("Choose at least one person.");
+    setError("");
+    add.mutate(peopleInput(ids, people.data, invites), { onSuccess: () => { toast("People added"); onDone(); }, onError: (err) => setError(errorMessage(err)) });
+  };
+  return <form onSubmit={submit} noValidate>
+    <div className="editor-content"><PeoplePicker onPendingChange={setInvitationPending} legend="People to add" ids={ids} onIds={setIds} invites={invites} onInvites={setInvites} exclude={space.members.filter((m) => m.active).map((m) => m.id)} disabled={add.isPending} />{error && <p className="err" role="alert">{error}</p>}</div>
+    <footer className="editor-footer"><span>{ids.length + invites.length} selected</span><div className="editor-actions"><button type="button" className="btn" disabled={add.isPending} onClick={cancel}>Cancel</button><button type="submit" className="btn primary" disabled={add.isPending || people.isPending || !!people.error || invitationPending}>{add.isPending ? "Adding…" : "Add people"}</button></div></footer>
+  </form>;
 }

@@ -20,8 +20,16 @@ function apply(pref: ThemePref) {
   document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
 }
 
+// Several controls show the theme (account menu, Settings, sign-in page); keep them in step.
+const EVENT = "expense-tracker-theme";
+
 export function useTheme(): [ThemePref, (p: ThemePref) => void] {
   const [pref, setPref] = useState<ThemePref>(readPref);
+  useEffect(() => {
+    const sync = () => setPref(readPref());
+    window.addEventListener(EVENT, sync);
+    return () => window.removeEventListener(EVENT, sync);
+  }, []);
   useEffect(() => {
     apply(pref);
     if (pref !== "system") return;
@@ -38,6 +46,7 @@ export function useTheme(): [ThemePref, (p: ThemePref) => void] {
       /* storage blocked: the choice lasts for this visit only */
     }
     setPref(p);
+    window.dispatchEvent(new Event(EVENT));
   };
   return [pref, set];
 }
