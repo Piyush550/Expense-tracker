@@ -201,3 +201,33 @@ describe("phone shortcut: errors are readable in the notification", () => {
     expect(other.body.message).toBeUndefined();
   });
 });
+
+describe("phone shortcut: pick who shared it", () => {
+  it("lists the space's people and splits only between the ones picked", async () => {
+    const { space, ashaId, chenId } = await flat();
+    const { token } = await makeToken();
+    const names = await api.call<string[]>(token, "POST", "/quick/people", { preset: "Flat 4B · Everyone" });
+    expect(names.status).toBe(200);
+    expect(names.body.sort()).toEqual(["asha", "bala", "chen"]);
+
+    // As a list (Shortcuts "Array" field)...
+    const picked = await api.call<QuickExpenseResult>(token, "POST", "/quick/expense", { preset: "Flat 4B · Everyone", amount: 300, title: "Cab", people: ["asha", "Chen"] });
+    expect(picked.status).toBe(201);
+    expect(picked.body.expense.shares.map((s) => s.userId).sort()).toEqual([ashaId, chenId].sort());
+    expect(picked.body.message).toBe("Added ₹300 Cab to Flat 4B · split 2 ways. You're owed ₹150 there.");
+
+    // ...or as text, one name per line (Shortcuts "Text" field holding a list).
+    const asText = await api.call<QuickExpenseResult>(token, "POST", "/quick/expense", { preset: `${space.id}.all`, amount: 100, title: "Tea", people: "chen\n" });
+    expect(asText.body.expense.shares.map((s) => s.userId)).toEqual([chenId]);
+
+    // Nobody picked: the preset's people, as before.
+    const none = await api.call<QuickExpenseResult>(token, "POST", "/quick/expense", { preset: "Flat 4B · Everyone", amount: 90, title: "Milk", people: [] });
+    expect(none.body.expense.shares).toHaveLength(3);
+
+    const unknown = await api.call<{ message: string }>(token, "POST", "/quick/expense", { preset: "Flat 4B · Everyone", amount: 90, people: ["zed"] });
+    expect(unknown.status).toBe(422);
+    expect(unknown.body.message).toBe('Couldn\'t add the expense: "zed" is not in Flat 4B. Run the shortcut again.');
+    const badPreset = await api.call<{ message: string }>(token, "POST", "/quick/people", { preset: "Nowhere" });
+    expect(badPreset.body.message).toMatch(/^Couldn't load the people: /);
+  });
+});

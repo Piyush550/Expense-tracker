@@ -61,7 +61,7 @@ export function PhoneShortcut() {
         <ol className="howsteps">
           <li><span className="howicon"><Icon name="key" /></span><span><strong>Create a key</strong><span className="muted">It lets your phone add expenses as you. It can never delete anything.</span></span></li>
           <li><span className="howicon"><Icon name="phone" /></span><span><strong>Build the shortcut</strong><span className="muted">A few actions in Apple's Shortcuts app, using the key.</span></span></li>
-          <li><span className="howicon"><Icon name="bolt" /></span><span><strong>Pop up after apps</strong><span className="muted">Close Swiggy or Uber, pick a split, type the amount. Done.</span></span></li>
+          <li><span className="howicon"><Icon name="bolt" /></span><span><strong>Pop up after apps</strong><span className="muted">Close Swiggy or Uber, pick the space and people, type the amount. Done.</span></span></li>
         </ol>
       </section>
 
@@ -172,9 +172,11 @@ export function PhoneShortcut() {
               <li><strong>Text</strong>: paste the key.</li>
               <li><strong>Choose from Menu</strong>, prompt "Spent something?", options Yes and Skip. Under Skip add <strong>Stop This Shortcut</strong>.</li>
               <li><strong>Get Contents of URL</strong>: <code>{origin}/api/quick/options</code>, header <code>Authorization</code> = <code>Bearer </code> + the Text.</li>
-              <li><strong>Get Dictionary Value</strong> <code>labels</code>, then <strong>Choose from List</strong> with prompt "Which split?".</li>
+              <li><strong>Get Dictionary Value</strong> <code>labels</code>, then <strong>Choose from List</strong> with prompt "Which space?".</li>
+              <li><strong>Get Contents of URL</strong>: <code>{origin}/api/quick/people</code>, method POST, same header, JSON body: <code>preset</code> (Text) = the chosen item.</li>
+              <li><strong>Choose from List</strong> on that result, prompt "Who shared it?", with <strong>Select Multiple</strong> on.</li>
               <li><strong>Ask for Input</strong> (Number) "Amount (₹)", then <strong>Ask for Input</strong> (Text) "What for?" with default answer <strong>Shortcut Input</strong>.</li>
-              <li><strong>Get Contents of URL</strong>: <code>{origin}/api/quick/expense</code>, method POST, same header, JSON body: <code>preset</code> = chosen item, <code>amount</code>, <code>title</code>.</li>
+              <li><strong>Get Contents of URL</strong>: <code>{origin}/api/quick/expense</code>, method POST, same header, JSON body: <code>preset</code> = the space choice, <code>amount</code> (Number), <code>title</code>, <code>people</code> (Text) = the people ticked.</li>
               <li><strong>Get Dictionary Value</strong> <code>message</code>, then <strong>Show Notification</strong>.</li>
             </ol>
           </li>

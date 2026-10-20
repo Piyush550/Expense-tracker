@@ -349,7 +349,8 @@ Errors look like `{ "error": { "code", "message" } }`.
 | PATCH / DELETE | `/tokens/:id` | sign-in only: rename or new expiry from today / delete a revoked or expired key |
 | POST | `/tokens/:id/regenerate`, `/tokens/:id/revoke` | sign-in only: new secret for the same entry (old one stops at once) / revoke |
 | GET | `/quick/options` | key or sign-in (keys also work on all other non-destructive routes): `{ labels, presets }`, each space as "Everyone" plus its quick-action groups |
-| POST | `/quick/expense` | key or sign-in: `{ preset, amount, title?, date?, requestId? }`: equal split, paid by you, dated today (India time) by default; returns `{ message, expense }` |
+| POST | `/quick/people` | key or sign-in: `{ preset }` → plain JSON list of the space's member names, for "Who shared it?" |
+| POST | `/quick/expense` | key or sign-in: `{ preset, amount, title?, date?, requestId?, people? }` (`people`: names as a list or one per line; empty = the preset's people): equal split, paid by you, dated today (India time) by default; returns `{ message, expense }` |
 
 ## iPhone shortcut
 
@@ -366,12 +367,17 @@ The shortcut ("Log expense"):
 2. **Choose from Menu** "Spent something?": Yes / Skip (Skip → **Stop This Shortcut**).
 3. **Get Contents of URL** `https://<site>/api/quick/options`, header
    `Authorization: Bearer <key>`.
-4. **Get Dictionary Value** `labels`, then **Choose from List** "Which split?".
-5. **Ask for Input** (Number) "Amount (₹)", then **Ask for Input** (Text) "What for?" with
+4. **Get Dictionary Value** `labels`, then **Choose from List** "Which space / group?".
+5. **Get Contents of URL** `https://<site>/api/quick/people`, POST, same header, JSON body
+   `preset` (Text) = the chosen item. The reply is a plain list of names.
+6. **Choose from List** "Who shared it?" on that reply, with **Select Multiple** on
+   (and **Select All Initially** if you usually split with everyone).
+7. **Ask for Input** (Number) "Amount (₹)", then **Ask for Input** (Text) "What for?" with
    default **Shortcut Input**.
-6. **Get Contents of URL** `https://<site>/api/quick/expense`, POST, same header, JSON body
-   `preset` = chosen item, `amount`, `title`.
-7. **Get Dictionary Value** `message`, then **Show Notification**. The reply always has a
+8. **Get Contents of URL** `https://<site>/api/quick/expense`, POST, same header, JSON body
+   `preset` (Text) = the step 4 choice, `amount` (Number), `title` (Text), `people` (Text) =
+   the names ticked in step 6. Ticking nobody splits with the step 4 choice's people.
+9. **Get Dictionary Value** `message`, then **Show Notification**. The reply always has a
    `message`: on success "Added ₹450 Swiggy to Flat 4B · split 3 ways…", on failure for example
    "Couldn't add the expense: This key is not valid any more…", so a problem is never a blank
    notification.

@@ -105,4 +105,8 @@ export const quickExpense = z.strictObject({
   title: z.string().trim().max(100).optional(),
   date: z.string().trim().max(40).optional(),
   requestId: id.optional(),
+  /** Names picked in "Who shared it?": a list, or text with one name per line. Empty = the preset's people. */
+  people: z.union([z.array(z.string().trim().max(80)).max(100), z.string().max(4000)]).optional(),
 });
+
+export const quickPeople = z.strictObject({ preset: z.string().trim().min(1).max(200) });

@@ -17,7 +17,7 @@ import { listContacts, registeredDirectory, requireContacts, requireRegistered }
 import * as s from "./schemas";
 import type { CreateExpense } from "./schemas";
 import { mergeUsers, resolveUser } from "./users";
-import { findPreset, quickAmount, quickDate, quickMessage, quickPresets } from "./quick";
+import { findPreset, peopleChoices, pickedPeople, quickAmount, quickDate, quickMessage, quickPresets } from "./quick";
 import { createToken, deleteToken, listTokens, regenerateToken, revokeToken, TOKEN_PREFIX, tokenMayCall, updateToken, userForToken } from "./tokens";
 import { randomUUID } from "node:crypto";
 
@@ -125,10 +125,21 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     return c.json<QuickOptions>({ labels: presets.map((p) => p.label), presets });
   });
 
+  // "Who shared it?": the names to tick for the chosen preset's space, as a plain JSON list so
+  // the shortcut can pass the reply straight to Choose from List. POST so the preset label
+  // (spaces, "·") travels in the body rather than the URL.
+  app.post("/quick/people", async (c) => {
+    const { preset: wanted } = await readBody(c, s.quickPeople);
+    const presets = await quickPresets(c.var.db, c.var.user);
+    return c.json<string[]>(peopleChoices(presets, findPreset(presets, wanted)).map((p) => p.label));
+  });
+
   app.post("/quick/expense", async (c) => {
     const body = await readBody(c, s.quickExpense);
     const me = c.var.user;
-    const preset = findPreset(await quickPresets(c.var.db, me), body.preset);
+    const presets = await quickPresets(c.var.db, me);
+    const preset = findPreset(presets, body.preset);
+    const people = pickedPeople(presets, preset, body.people) ?? preset.people;
     const amountPaise = quickAmount(body.amount);
     const title = (body.title?.trim() || "Expense").slice(0, 100);
     const spentOn = quickDate(body.date);
@@ -142,11 +153,11 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
         splitType: "equal",
         spentOn,
         remarks: "",
-        splits: preset.people.map((p) => ({ userId: p.id })),
+        splits: people.map((p) => ({ userId: p.id })),
       }, await activeMemberIds(tx, preset.spaceId));
     });
     const net = await memberNet(c.var.db, preset.spaceId, me.id);
-    return c.json<QuickExpenseResult>({ message: quickMessage(amountPaise, title, preset, net), expense: result.expense }, result.created ? 201 : 200);
+    return c.json<QuickExpenseResult>({ message: quickMessage(amountPaise, title, preset, net, people), expense: result.expense }, result.created ? 201 : 200);
   });
 
   // ── Me ────────────────────────────────────────────────────────────────────────────────
@@ -554,6 +565,7 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const path = c.req.path.replace(/\/+$/, "");
     if (path === "/api/quick/expense") body.message = `Couldn't add the expense: ${message}`;
     else if (path === "/api/quick/options") body.message = `Couldn't load your choices: ${message}`;
+    else if (path === "/api/quick/people") body.message = `Couldn't load the people: ${message}`;
     return c.json(body, status);
   };
 
