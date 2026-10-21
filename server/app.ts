@@ -57,7 +57,7 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     if (token.startsWith(TOKEN_PREFIX)) {
       // A personal token: signs in as the user who made it, for everything but destructive routes.
       const user = await userForToken(db, token);
-      if (!user) throw unauthorized("This key is not valid any more. Create a new one in the app under Settings → iPhone shortcut.");
+      if (!user) throw unauthorized("This key is not valid any more. Create a new one in the app under Settings → iPhone & AI apps.");
       if (!tokenMayCall(c.req.method, c.req.path)) {
         throw forbidden("token_scope", "A key can't delete, merge people or manage keys. Do that in the app.");
       }
@@ -415,6 +415,12 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
       return out;
     });
     return c.json<{ expenses: Expense[] }>({ expenses: saved }, 201);
+  });
+
+  app.get("/expenses/:id", async (c) => {
+    const expense = await findExpense(c.var.db, assertUuid(c.req.param("id"), "That expense"), c.var.user.id);
+    if (!expense) throw notFound("That expense");
+    return c.json<Expense>(expense);
   });
 
   app.patch("/expenses/:id", async (c) => {

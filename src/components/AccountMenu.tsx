@@ -58,7 +58,7 @@ export function AccountMenu({ me, active, onOpen }: { me: Me; active: boolean; o
             <Icon name="user" /> <span>Profile</span>
           </button>
           <button type="button" role="menuitem" className="acctitem" onClick={() => go("shortcut")}>
-            <Icon name="phone" /> <span>iPhone shortcut</span>
+            <Icon name="phone" /> <span>iPhone & AI apps</span>
           </button>
           <button type="button" role="menuitem" className="acctitem" onClick={() => go("appearance")}>
             <Icon name="palette" /> <span>Appearance</span>

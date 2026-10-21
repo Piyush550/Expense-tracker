@@ -18,8 +18,8 @@ const when = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "never";
 
 /**
- * Personal keys for the iPhone shortcut. A key signs in as you, but can only list your
- * presets and add equal-split expenses; it cannot see or change anything else.
+ * Personal keys for the iPhone shortcut and AI apps (Claude, ChatGPT). A key signs in as you
+ * for everything except deleting, merging people and managing keys.
  */
 export function PhoneShortcut() {
   const toast = useToast();
@@ -30,6 +30,7 @@ export function PhoneShortcut() {
   const [fresh, setFresh] = useState<NewApiToken | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const origin = window.location.origin;
+  const connector = (token: string) => `${origin}/mcp/${token}`;
   const refresh = () => qc.invalidateQueries({ queryKey: keys.tokens });
   const fail = (err: unknown) => toast(errorMessage(err));
   const show = (t: NewApiToken) => {
@@ -62,6 +63,7 @@ export function PhoneShortcut() {
           <li><span className="howicon"><Icon name="key" /></span><span><strong>Create a key</strong><span className="muted">It lets your phone add expenses as you. It can never delete anything.</span></span></li>
           <li><span className="howicon"><Icon name="phone" /></span><span><strong>Build the shortcut</strong><span className="muted">A few actions in Apple's Shortcuts app, using the key.</span></span></li>
           <li><span className="howicon"><Icon name="bolt" /></span><span><strong>Pop up after apps</strong><span className="muted">Close Swiggy or Uber, pick the space and people, type the amount. Done.</span></span></li>
+          <li><span className="howicon"><Icon name="sparkle" /></span><span><strong>Or ask an AI</strong><span className="muted">Add the key to Claude or ChatGPT and say "add ₹900 dinner with Bala".</span></span></li>
         </ol>
       </section>
 
@@ -87,6 +89,13 @@ export function PhoneShortcut() {
               <input id="site-url" type="text" readOnly value={origin} className="mono" onFocus={(e) => e.currentTarget.select()} />
             </div>
             <button type="button" className="btn" onClick={() => copy(origin, "Address")}>Copy address</button>
+          </div>
+          <div className="inline">
+            <div className="field" style={{ minWidth: 0 }}>
+              <label htmlFor="mcp-url">Connector address for Claude or ChatGPT (holds the key, keep it private)</label>
+              <input id="mcp-url" type="text" readOnly value={connector(fresh.token)} className="mono" onFocus={(e) => e.currentTarget.select()} />
+            </div>
+            <button type="button" className="btn" onClick={() => copy(connector(fresh.token), "Connector address")}>Copy connector</button>
           </div>
           <div><button type="button" className="btn small" onClick={() => setFresh(null)}>I've copied it</button></div>
         </div>
@@ -182,6 +191,20 @@ export function PhoneShortcut() {
           </li>
           <li>In the Automation tab: <strong>App</strong> → pick Swiggy → <strong>Is Closed</strong> → Run Immediately. Add <strong>Text</strong> "Swiggy" and <strong>Run Shortcut</strong> "Log expense" with that text as input. Repeat for other apps.</li>
         </ol>
+      </details>
+    </section>
+
+    <section className="card">
+      <details>
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>How to use it with Claude or ChatGPT</summary>
+        <div className="note" style={{ lineHeight: 1.6 }}>
+          <p>Create a key above (name it after the app, like "Claude") and copy its <strong>connector address</strong>: <code>{origin}/mcp/et_…</code>. Add it once on the website; the phone apps pick it up when you sign in with the same account.</p>
+          <ol style={{ paddingLeft: 20 }}>
+            <li><strong>Claude</strong> (claude.ai): Settings → Connectors → <strong>Add custom connector</strong>. Name: Expense Tracker. URL: the connector address. Leave the advanced settings empty, then <strong>Add</strong>. In a chat, turn it on from the tools menu.</li>
+            <li><strong>ChatGPT</strong> (chatgpt.com): Settings → Apps → Advanced settings → turn on <strong>Developer mode</strong>, then <strong>Create app</strong>. Name: Expense Tracker. URL: the connector address. Authentication: <strong>No authentication</strong>. Tick that you trust it, then <strong>Create</strong>.</li>
+          </ol>
+          <p>Then ask things like "Who owes whom in Flat 4B this month?" or "Add ₹900 dinner yesterday, split between me and Bala". The assistant can add and edit, but never delete. To cut it off, revoke its key here.</p>
+        </div>
       </details>
     </section>
     </>

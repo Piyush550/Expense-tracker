@@ -1005,7 +1005,10 @@ kbd { font-family: inherit; border: 1px solid var(--line); padding: 0 3px; borde
 .themesplit { flex: 1; display: flex; }
 .themesplit .themepreview:first-child { border-radius: 8px 0 0 8px; border-right: 0; }
 .themesplit .themepreview:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
-.howsteps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+/* Four steps: one row on wide screens, two by two below that (never three plus one), one column on phones. */
+.howsteps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (min-width: 1280px) { .howsteps { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .howsteps { grid-template-columns: minmax(0, 1fr); } }
 .howsteps li { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; align-items: start; }
 .howsteps li > span:last-child { display: flex; flex-direction: column; gap: 2px; }
 .howsteps .muted { font-size: 13px; }

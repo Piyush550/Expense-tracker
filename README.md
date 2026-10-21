@@ -196,7 +196,7 @@ The API is public on the internet. Security comes from the code:
 
 1. Every `/api` request needs a Firebase ID token. `server/auth.ts` verifies its RS256
    signature against Google's keys, plus the issuer, audience, expiry and a verified email.
-   The one exception is a **personal key** (`et_…`, see "iPhone shortcut" below): it signs in
+   The one exception is a **personal key** (`et_…`, see "iPhone shortcut" and "AI apps (MCP)" below): it signs in
    as the user who made it and can use every route **except** destructive ones: any `DELETE`,
    merging a member (`POST /api/spaces/:id/members/:userId/merge`) and anything under
    `/api/tokens`. Those answer 403 `token_scope` and need a normal sign-in, so a stolen key
@@ -348,15 +348,16 @@ Errors look like `{ "error": { "code", "message" } }`.
 | GET / POST | `/tokens` | sign-in only: your personal keys / create `{ name, lifetimeDays }` (`null` = never expires; the key is in the reply once) |
 | PATCH / DELETE | `/tokens/:id` | sign-in only: rename or new expiry from today / delete a revoked or expired key |
 | POST | `/tokens/:id/regenerate`, `/tokens/:id/revoke` | sign-in only: new secret for the same entry (old one stops at once) / revoke |
-| GET | `/quick/options` | key or sign-in (keys also work on all other non-destructive routes): `{ labels, presets }`, each space as "Everyone" plus its quick-action groups |
+| GET | `/expenses/:id` | one expense, if you're in its space |
+| GET, POST | `/quick/options` | key or sign-in (keys also work on all other non-destructive routes): `{ labels, presets }`, each space as "Everyone" plus its quick-action groups. POST is accepted too, because a GET with a body (an easy Shortcuts mistake) fails at Netlify |
 | POST | `/quick/people` | key or sign-in: `{ preset }` → plain JSON list of the space's member names, for "Who shared it?" |
 | POST | `/quick/expense` | key or sign-in: `{ preset, amount, title?, date?, requestId?, people? }` (`people`: names as a list or one per line; empty = the preset's people): equal split, paid by you, dated today (India time) by default; returns `{ message, expense }` |
 
 ## iPhone shortcut
 
 A personal key lets Apple's Shortcuts app add expenses as you, for example a prompt every
-time you close Swiggy. Create one under **Settings → iPhone shortcut** (the account button at the
-bottom left of the sidebar opens Profile, iPhone shortcut, Appearance and Sign out). The page shows the key
+time you close Swiggy. Create one under **Settings → iPhone & AI apps** (the account button at the
+bottom left of the sidebar opens Profile, iPhone & AI apps, Appearance and Sign out). The page shows the key
 once, lists your keys with when each was last used, and lets you rename, change the expiry,
 regenerate (new secret, old one stops at once), revoke, and delete revoked ones. Each user can
 have up to 10 active keys.
@@ -386,6 +387,26 @@ Then in the Automation tab: **App** → pick the app → **Is Closed** → Run I
 the actions **Text** "Swiggy" and **Run Shortcut** "Log expense" (input: that text). Repeat
 per app. The presets are each space's "Everyone" plus its quick-action groups, so they follow
 what owners set as shortcuts in the app.
+
+Step-by-step, tap-by-tap instructions and troubleshooting: [docs/IPHONE_SHORTCUT_SETUP.md](docs/IPHONE_SHORTCUT_SETUP.md).
+
+## AI apps (MCP)
+
+`/mcp` is an MCP server (Streamable HTTP, stateless, JSON replies) so Claude and ChatGPT,
+including their phone apps, can read spaces and add expenses as you. It signs in with a
+personal key, sent as `Authorization: Bearer et_…` or as the last part of the address
+(`/mcp/et_…`) for connector forms without a header field; there the connector is added with
+"No authentication". Settings shows the **connector address** next to a new key.
+
+- Code: `server/mcp.ts` (tools), `netlify/functions/mcp.ts` (function at `/mcp` and `/mcp/*`).
+  Tools call the API in-process with the key, so they have exactly a key's scope: no deleting,
+  merging or key management.
+- Tools: `list_spaces`, `get_space`, `list_expenses`, `get_balances`, `add_expense`,
+  `add_expenses`, `edit_expense`, `record_payment`. They take names ("me", people, groups),
+  rupees and dates like "yesterday", and reply in plain text.
+- `npm run dev:local` serves `/mcp` too. Try it with `npx @modelcontextprotocol/inspector`.
+- Setup for users: [docs/AI_APPS_SETUP.md](docs/AI_APPS_SETUP.md). Design and the OAuth next
+  step: [docs/MCP_SERVER_PLAN.md](docs/MCP_SERVER_PLAN.md).
 
 ## Changing the database
 

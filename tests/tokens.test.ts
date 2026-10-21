@@ -192,7 +192,7 @@ describe("phone shortcut: errors are readable in the notification", () => {
     await api.call(asha, "POST", `/tokens/${info.id}/revoke`);
     const revoked = await api.call<{ message: string }>(token, "POST", "/quick/expense", { preset: "Flat 4B · Everyone", amount: 10 });
     expect(revoked.status).toBe(401);
-    expect(revoked.body.message).toBe("Couldn't add the expense: This key is not valid any more. Create a new one in the app under Settings → iPhone shortcut.");
+    expect(revoked.body.message).toBe("Couldn't add the expense: This key is not valid any more. Create a new one in the app under Settings → iPhone & AI apps.");
     const options = await api.call<{ message: string }>(token, "GET", "/quick/options");
     expect(options.body.message).toMatch(/^Couldn't load your choices: /);
 

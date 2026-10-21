@@ -14,17 +14,17 @@ import { PhoneShortcut } from "./PhoneShortcut";
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "profile", label: "Profile" },
   { id: "appearance", label: "Appearance" },
-  { id: "shortcut", label: "iPhone shortcut" },
+  { id: "shortcut", label: "iPhone & AI apps" },
 ];
 
-/** Settings: your profile, how the app looks, and keys for the iPhone shortcut. */
+/** Settings: your profile, how the app looks, and keys for the iPhone shortcut and AI apps. */
 export function SettingsPage({ me, tab, onTab }: { me: Me; tab: SettingsTab; onTab(tab: SettingsTab): void }) {
   return (
     <>
       <div className="spacehead">
         <div>
           <h1 className="spacetitle">Settings</h1>
-          <p className="sub">Your profile, how the app looks, and adding expenses from your iPhone.</p>
+          <p className="sub">Your profile, how the app looks, and adding expenses from your iPhone or an AI assistant.</p>
         </div>
       </div>
       <div className="subtabs" role="tablist" aria-label="Settings sections">
