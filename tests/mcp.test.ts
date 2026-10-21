@@ -109,6 +109,13 @@ describe("MCP server", () => {
     expect(list.text).toMatch(/1 expense in Flat 4B, October 2026, ₹30,000 in all/);
     expect(list.text).toContain("paid by asha (you)");
 
+    for (const month of ["Octember", "octopus", "oc"]) {
+      const bad = await tool(client, "list_expenses", { space: "Flat 4B", month });
+      expect(bad, month).toMatchObject({ isError: true });
+      expect(bad.text).toContain("Could not read the month");
+    }
+    expect((await tool(client, "list_expenses", { space: "Flat 4B", month: "Oct 2026" })).text).toMatch(/^1 expense in Flat 4B, October 2026/);
+
     const balances = await tool(client, "get_balances", { space: "Flat 4B" });
     expect(balances.text).toContain("asha (you) is owed ₹15,000");
     expect(balances.text).toContain("chen pays asha (you) ₹10,000");
@@ -148,6 +155,12 @@ describe("MCP server", () => {
     const cab = expenses.find((e) => e.description === "Cab")!;
     expect(cab.shares.find((s) => s.userId === ashaId)?.sharePaise).toBe(60_000);
     expect(todayInIndia() > beer.spentOn).toBe(true);
+
+    const ambiguous = await tool(client, "add_expense", { space: "Flat 4B", description: "Tea", amount: 50, split_between: ["a"] });
+    expect(ambiguous).toMatchObject({ isError: true });
+    expect(ambiguous.text).toMatch(/could be "asha" or "bala"/);
+    const noValues = await tool(client, "add_expense", { space: "Flat 4B", description: "Tea", amount: 50, split_type: "exact" });
+    expect(noValues.text).toBe("An exact split needs split_values: one entry per person.");
 
     const bad = await tool(client, "add_expense", { space: "Flat 4B", description: "Tea", amount: 50, split_between: ["Zed"] });
     expect(bad.isError).toBe(true);
@@ -193,6 +206,8 @@ describe("MCP server", () => {
     expect(paid.text).toContain("bala paid asha (you) ₹250");
     const payments = (await api.call<Settlement[]>(asha, "GET", `/spaces/${space.id}/settlements`)).body;
     expect(payments[0]).toMatchObject({ fromUserId: balaId, toUserId: ashaId, amountPaise: 25_000, period: "2026-10" });
+    const self = await tool(client, "record_payment", { space: "Flat 4B", to: "me", amount: 10 });
+    expect(self).toEqual({ isError: true, text: "Someone cannot pay themselves." });
     const balances = (await api.call<Balances>(asha, "GET", `/spaces/${space.id}/balances`)).body;
     expect(balances.members.reduce((sum, m) => sum + m.netPaise, 0)).toBe(0);
   });

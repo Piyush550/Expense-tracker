@@ -45,7 +45,8 @@ class Api {
     const data = text ? (JSON.parse(text) as unknown) : null;
     if (!res.ok) {
       const message = (data as { error?: { message?: string } } | null)?.error?.message;
-      throw new ToolError(message ?? `The app answered ${res.status}.`);
+      // Whole-body validation messages arrive as "body: …"; the prefix means nothing to a person.
+      throw new ToolError(message?.replace(/^body: /, "") ?? `The app answered ${res.status}.`);
     }
     return data as T;
   }
@@ -155,7 +156,7 @@ function toDate(text: string | undefined): string {
   }
 }
 
-const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
 
 /** "2026-10", "this month", "last month", "October", "Oct 2026" → "YYYY-MM". */
 function toMonth(text: string | undefined): string | undefined {
@@ -166,7 +167,8 @@ function toMonth(text: string | undefined): string | undefined {
   if (s === "this month" || s === "current month") return current;
   if (s === "last month" || s === "previous month") return shiftMonth(current, -1);
   const m = /^([a-z]{3,9})\.?(?:\s+(\d{4}))?$/.exec(s);
-  const index = m ? MONTH_NAMES.findIndex((n) => m[1]!.startsWith(n)) : -1;
+  // "oct", "octo", "october": at least three letters, and only a beginning of the real name.
+  const index = m ? MONTH_NAMES.findIndex((n) => n.startsWith(m[1]!)) : -1;
   if (m && index >= 0) {
     const mm = String(index + 1).padStart(2, "0");
     if (m[2]) return `${m[2]}-${mm}`;
@@ -214,7 +216,7 @@ function expenseBody(space: Space, a: ExpenseArgs) {
       splits = findPeople(space, a.split_between).map((m) => ({ userId: m.id, value: null }));
     }
   } else {
-    if (!a.split_values?.length) throw new ToolError(`A ${splitType} split needs split_values: one entry per person.`);
+    if (!a.split_values?.length) throw new ToolError(`${splitType === "exact" ? "An" : "A"} ${splitType} split needs split_values: one entry per person.`);
     splits = a.split_values.map((v) => {
       const userId = findMember(space, v.person).id;
       if (splitType === "exact") return { userId, value: Math.round(v.value * 100) };
