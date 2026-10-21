@@ -10,7 +10,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Balances, Expense, Group, Me, Member, Settlement, SpaceDetail, SpaceSummary } from "../shared/api";
+import type { Balances, Expense, Group, Me, Member, MonthSummary, Settlement, SpaceDetail, SpaceSummary } from "../shared/api";
 import { MONTH_RE, monthLabel, shiftMonth } from "../shared/dates";
 import { formatMoney, MAX_AMOUNT_PAISE } from "../shared/money";
 import { PERCENT_TOTAL, type SplitType } from "../shared/split";
@@ -24,7 +24,9 @@ const INSTRUCTIONS = `Expense Tracker: shared expenses in "spaces" (a flat, a tr
 Amounts are in rupees (₹). People and spaces are named by name; "me" means the signed-in user.
 Start with list_spaces. Before adding, check names with get_space if unsure.
 Defaults when the user doesn't say: they paid, it is split equally between everyone in the space, dated today. Use them and mention them in your reply; don't ask about them.
-Ask only when the amount or what it was for is missing, or a name doesn't match. Never guess an amount.
+split_between is exactly who shares the cost. "Split with Chen" or "split with Boys" means only Chen or only the Boys group: don't add the payer or the user unless they say "me", "us" or "between me and …".
+Ask only when the amount or what it was for is missing, or a name doesn't match. Never guess an amount. Amounts have at most 2 decimals (paise); if the user gives more, ask instead of rounding.
+To edit, read the expense first and send the version you saw. Payments are listed with list_payments.
 This connector cannot delete anything; for that, use the app.`;
 
 /** A readable failure; becomes the tool's error text. */
@@ -115,37 +117,83 @@ function findMember(space: Space, wanted: string): Member {
   );
 }
 
-/** People for an equal split: names, group names or "everyone". Empty means everyone. */
+/** A member matched closely (me, id, email, full name or first name), for spotting name clashes with groups. */
+function closeMember(space: Space, wanted: string): Member | null {
+  const w = norm(wanted);
+  const active = space.detail.members.filter((m) => m.active);
+  if (ME_WORDS.has(w)) return active.find((m) => m.id === space.me.id) ?? null;
+  const hits = active.filter((m) => m.id === wanted.trim() || m.email?.toLowerCase() === w || norm(m.name) === w || norm(m.name).split(" ")[0] === w);
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+/** A group's current members; a group whose people have all left can't be split with. */
+function groupMembers(space: Space, group: Group): Member[] {
+  const active = space.detail.members.filter((m) => m.active);
+  const members = active.filter((m) => group.members.some((p) => p.id === m.id));
+  if (!members.length) throw new ToolError(`The group "${group.name}" has no current members in ${space.detail.name}. Name the people instead.`);
+  return members;
+}
+
+/**
+ * People for an equal split: names, group names or "everyone"; leaving it out means everyone.
+ * "group:Name" and "person:Name" pick explicitly. Anything that could mean two different sets
+ * of people (a person and a group with the same name, two groups with one name, a group called
+ * "Everyone") is refused with the choices, never guessed.
+ */
 function findPeople(space: Space, wanted: string[] | undefined): Member[] {
   const active = space.detail.members.filter((m) => m.active);
+  if (wanted === undefined) return active;
+  if (!wanted.some((w) => w.trim())) {
+    throw new ToolError("No one was picked to share this. Name at least one person or group, or leave split_between out to split with everyone.");
+  }
   const out = new Map<string, Member>();
-  for (const raw of wanted ?? []) {
-    const w = norm(raw);
+  const add = (ms: Member[]) => ms.forEach((m) => out.set(m.id, m));
+  const describe = (g: Group) => `"${g.name}" (${g.members.map((p) => space.name(p.id)).join(", ") || "nobody"})`;
+  for (const raw of wanted) {
+    const prefix = /^(group|person)\s*:\s*(.+)$/i.exec(raw.trim());
+    const w = norm(prefix ? prefix[2]! : raw);
     if (!w) continue;
-    if (EVERYONE_WORDS.has(w)) {
-      active.forEach((m) => out.set(m.id, m));
+    const groups = space.groups.filter((g) => norm(g.name) === w);
+    if (prefix?.[1]!.toLowerCase() === "person") {
+      add([findMember(space, prefix[2]!)]);
       continue;
     }
-    const group = space.groups.find((g) => norm(g.name) === w);
-    let person: Member | null = null;
-    try {
-      person = findMember(space, raw);
-    } catch (err) {
-      if (!group) throw err;
+    if (groups.length > 1) {
+      throw new ToolError(`There are ${groups.length} groups called "${groups[0]!.name}" in ${space.detail.name}: ${groups.map(describe).join(" and ")}. Name the people instead.`);
     }
-    if (person) out.set(person.id, person);
-    else group!.members.forEach((p) => {
-      const m = active.find((a) => a.id === p.id);
-      if (m) out.set(m.id, m);
-    });
+    if (prefix?.[1]!.toLowerCase() === "group") {
+      if (!groups.length) throw new ToolError(`No group called "${prefix[2]}" in ${space.detail.name}. Groups: ${space.groups.map((g) => g.name).join(", ") || "none"}.`);
+      add(groupMembers(space, groups[0]!));
+      continue;
+    }
+    const group = groups[0];
+    if (EVERYONE_WORDS.has(w)) {
+      if (group) throw new ToolError(`"${raw}" could mean everyone in ${space.detail.name} or the group ${describe(group)}. Use "group:${group.name}" for the group, or leave split_between out for everyone.`);
+      add(active);
+      continue;
+    }
+    if (group) {
+      const person = closeMember(space, w);
+      if (person) {
+        throw new ToolError(`"${raw}" is both the person ${space.name(person.id)} and the group ${describe(group)}. Use "person:${person.name}" or "group:${group.name}".`);
+      }
+      add(groupMembers(space, group));
+      continue;
+    }
+    add([findMember(space, raw)]);
   }
-  return out.size ? [...out.values()] : active;
+  return [...out.values()];
 }
 
 // ── Money, dates, months ──────────────────────────────────────────────────────────────────
-function paise(rupees: number, what = "The amount"): number {
-  const p = Math.round(rupees * 100);
-  if (!Number.isFinite(p) || p <= 0) throw new ToolError(`${what} must be above zero.`);
+/** Rupees → paise. More than 2 decimals is refused rather than silently rounded. */
+function paise(rupees: number, what = "The amount", allowZero = false): number {
+  const exact = rupees * 100;
+  const p = Math.round(exact);
+  if (!Number.isFinite(p) || p < 0 || (!allowZero && p === 0)) throw new ToolError(`${what} must be above zero.`);
+  if (Math.abs(exact - p) > 1e-6) {
+    throw new ToolError(`${what} (₹${rupees}) has more than 2 decimal places. Amounts are kept to the paisa, e.g. ₹1.00 or ₹1.01: ask which to use.`);
+  }
   if (p > MAX_AMOUNT_PAISE) throw new ToolError(`${what} is too large.`);
   return p;
 }
@@ -186,18 +234,20 @@ const SPLIT_TYPES = ["equal", "exact", "percent", "shares"] as const;
 
 const splitValue = z.strictObject({
   person: z.string().min(1).describe('A name in the space, or "me".'),
-  value: z.number().min(0).describe("exact: rupees this person owes · percent: their percent (all add up to 100) · shares: how many shares (e.g. 2 for a couple)"),
+  value: z.number().min(0).describe("exact: rupees this person owes (at most 2 decimals) · percent: their percent (all add up to 100) · shares: how many shares, a whole number (e.g. 2 for a couple)"),
 });
 
 const expenseShape = {
   description: z.string().trim().min(1).max(100).describe("What it was for, e.g. Groceries."),
-  amount: z.number().positive().describe("Total in rupees, e.g. 450 or 450.50."),
+  amount: z.number().positive().describe("Total in rupees, at most 2 decimals, e.g. 450 or 450.50."),
   paid_by: z.string().optional().describe('Who paid: a name in the space. Defaults to "me".'),
   split_between: z
     .array(z.string())
     .max(100)
     .optional()
-    .describe('For an equal split: names, group names or "everyone". Defaults to everyone in the space.'),
+    .describe(
+      'Exactly who shares the cost, as names or group names; only these people get a share (the payer and "me" are not added unless listed). Leave out to split with everyone in the space. Use "group:Name" or "person:Name" when a name could be either.',
+    ),
   split_type: z.enum(SPLIT_TYPES).optional().describe("How to divide it. Defaults to equal."),
   split_values: z.array(splitValue).max(100).optional().describe("Needed when split_type is exact, percent or shares: one entry per person who owes a part."),
   date: z.string().max(40).optional().describe("When: 2026-10-21, 21 Oct, today or yesterday. Defaults to today (India time)."),
@@ -221,8 +271,13 @@ function expenseBody(space: Space, a: ExpenseArgs) {
     if (!a.split_values?.length) throw new ToolError(`${splitType === "exact" ? "An" : "A"} ${splitType} split needs split_values: one entry per person.`);
     splits = a.split_values.map((v) => {
       const userId = findMember(space, v.person).id;
-      if (splitType === "exact") return { userId, value: Math.round(v.value * 100) };
-      if (splitType === "percent") return { userId, value: Math.round((v.value * PERCENT_TOTAL) / 100) };
+      const whose = ME_WORDS.has(norm(v.person)) ? "Your" : `${v.person}'s`;
+      if (splitType === "exact") return { userId, value: paise(v.value, `${whose} share`, true) };
+      if (splitType === "percent") {
+        const bp = (v.value * PERCENT_TOTAL) / 100;
+        if (Math.abs(bp - Math.round(bp)) > 1e-6) throw new ToolError(`${whose} percentage (${v.value}%) has more than 2 decimal places.`);
+        return { userId, value: Math.round(bp) };
+      }
       if (!Number.isInteger(v.value)) throw new ToolError("Shares must be whole numbers, like 1 or 2.");
       return { userId, value: v.value };
     });
@@ -242,16 +297,26 @@ function expenseBody(space: Space, a: ExpenseArgs) {
 const SPLIT_WORDS: Record<SplitType, string> = { equal: "equally", exact: "by exact amounts", percent: "by percent", shares: "by shares" };
 
 function describeExpense(space: Space, e: Expense): string {
-  const shares = e.shares.map((s) => `${space.name(s.userId)} ${formatMoney(s.sharePaise)}`).join(", ");
+  // Percent and share weights are shown too, so they can be read back exactly (₹0.01 at 1%/99% rounds to ₹0/₹0.01).
+  const weight = (v: number | null) =>
+    v === null ? "" : e.splitType === "percent" ? ` (${(v / (PERCENT_TOTAL / 100)).toLocaleString("en-IN", { maximumFractionDigits: 2 })}%)` : e.splitType === "shares" ? ` (${v} ${v === 1 ? "share" : "shares"})` : "";
+  const shares = e.shares.map((s) => `${space.name(s.userId)} ${formatMoney(s.sharePaise)}${weight(s.splitValue)}`).join(", ");
   return `${e.spentOn} · ${e.description} · ${formatMoney(e.amountPaise)} · paid by ${space.name(e.payerId)} · split ${SPLIT_WORDS[e.splitType]}: ${shares}${
     e.remarks ? ` · note: ${e.remarks}` : ""
   } · id ${e.id} (version ${e.version})`;
 }
 
+/** Your all-time standing, added after a write. The write is already saved, so a failure here only drops this line. */
 async function myStanding(api: Api, space: Space): Promise<string> {
-  const balances = await api.call<Balances>("GET", `/spaces/${space.detail.id}/balances`);
+  let balances: Balances;
+  try {
+    balances = await api.call<Balances>("GET", `/spaces/${space.detail.id}/balances`);
+  } catch {
+    return "(Saved. Your balance couldn't be read just now; ask for balances to see it.)";
+  }
   const net = balances.members.find((m) => m.userId === space.me.id)?.netPaise ?? 0;
-  return net > 0 ? `You're owed ${formatMoney(net)} in ${space.detail.name}.` : net < 0 ? `You owe ${formatMoney(-net)} in ${space.detail.name}.` : `You're square in ${space.detail.name}.`;
+  const where = `in ${space.detail.name} (all time)`;
+  return net > 0 ? `You're owed ${formatMoney(net)} ${where}.` : net < 0 ? `You owe ${formatMoney(-net)} ${where}.` : `You're square ${where}.`;
 }
 
 // ── The tools ─────────────────────────────────────────────────────────────────────────────
@@ -279,9 +344,21 @@ const requestIdArg = z.uuid().optional().describe("Optional. Only for retrying t
  * different expense (they make up "random" ids that repeat) still gets a new row instead of
  * silently getting the old one back.
  */
+/** JSON with object keys sorted and split rows in user order, so the same request in another order matches. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    const items = value.map(canonical);
+    return `[${(value.every((v) => v && typeof v === "object" && "userId" in v) ? items.sort() : items).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function rowId(requestId: string | undefined, content: unknown): string {
   if (!requestId) return randomUUID();
-  const h = createHash("sha256").update(requestId).update("\0").update(JSON.stringify(content)).digest("hex");
+  const h = createHash("sha256").update(requestId).update("\0").update(canonical(content)).digest("hex");
   const variant = ((parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16);
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
@@ -331,21 +408,95 @@ function buildServer(api: Api, me: Me): McpServer {
     "list_expenses",
     {
       title: "List expenses",
-      description: "Expenses in a space, newest first, with who paid and each person's share. Includes each expense's id for edit_expense.",
-      inputSchema: { space: spaceArg, month: monthArg, limit: z.number().int().min(1).max(200).optional().describe("At most this many (default 50).") },
+      description:
+        "Expenses in a space, newest first, with who paid, each person's share, and each expense's id and version for edit_expense. Filter by month, payer, a person who has a share, or text in the title or note; page with offset. Counts and totals cover every match, not just the page shown.",
+      inputSchema: {
+        space: spaceArg,
+        month: monthArg,
+        paid_by: z.string().optional().describe("Only expenses this person paid."),
+        involving: z.string().optional().describe("Only expenses where this person has a share (whoever paid)."),
+        search: z.string().max(100).optional().describe("Only expenses whose title or note contains this text."),
+        limit: z.number().int().min(1).max(200).optional().describe("At most this many (default 50)."),
+        offset: z.number().int().min(0).optional().describe("Skip this many matches first, to see the next page (default 0)."),
+      },
       annotations: READ,
     },
-    ({ space, month, limit }) =>
+    ({ space, month, paid_by, involving, search, limit, offset }) =>
       run(async () => {
         const s = await loadSpace(api, me, space);
         const m = toMonth(month);
-        const all = await api.call<Expense[]>("GET", `/spaces/${s.detail.id}/expenses${m ? `?month=${m}` : ""}`);
-        const shown = all.slice(0, limit ?? 50);
         const where = `${s.detail.name}${m ? `, ${monthLabel(m)}` : ""}`;
-        if (!all.length) return `No expenses in ${where}.`;
-        const total = all.reduce((sum, e) => sum + e.amountPaise, 0);
-        const more = all.length > shown.length ? ` Showing the newest ${shown.length}; ask for a month or a higher limit to see others.` : "";
-        return `${all.length} ${all.length === 1 ? "expense" : "expenses"} in ${where}, ${formatMoney(total)} in all.${more}\n${shown.map((e) => `- ${describeExpense(s, e)}`).join("\n")}`;
+        const filters: string[] = [];
+        const tests: ((e: Expense) => boolean)[] = [];
+        if (paid_by) {
+          const p = findMember(s, paid_by);
+          filters.push(`paid by ${s.name(p.id)}`);
+          tests.push((e) => e.payerId === p.id);
+        }
+        let involvedId: string | undefined;
+        if (involving) {
+          const p = findMember(s, involving);
+          involvedId = p.id;
+          filters.push(`involving ${s.name(p.id)}`);
+          tests.push((e) => e.shares.some((x) => x.userId === p.id && x.sharePaise > 0));
+        }
+        if (search?.trim()) {
+          const q = norm(search);
+          filters.push(`matching "${search.trim()}"`);
+          tests.push((e) => norm(`${e.description} ${e.remarks}`).includes(q));
+        }
+        const [fetched, months] = await Promise.all([
+          api.call<Expense[]>("GET", `/spaces/${s.detail.id}/expenses${m ? `?month=${m}` : ""}`),
+          api.call<MonthSummary[]>("GET", `/spaces/${s.detail.id}/months`),
+        ]);
+        // Exact count and total from the database; the list itself is capped at the newest 5,000.
+        const scope = m ? months.filter((x) => x.month === m) : months;
+        const count = scope.reduce((n, x) => n + x.expenseCount, 0);
+        const total = scope.reduce((n, x) => n + x.spentPaise, 0);
+        if (!count) return `No expenses in ${where}.`;
+        const capped = fetched.length < count;
+        const matches = tests.length ? fetched.filter((e) => tests.every((t) => t(e))) : fetched;
+        const head = `${count.toLocaleString("en-IN")} ${count === 1 ? "expense" : "expenses"} in ${where}, ${formatMoney(total)} in all.`;
+        // With "involving", that person's own share is what's usually asked for, not the expenses' totals.
+        const theirShare = involvedId
+          ? `, of which ${s.name(involvedId)}'s share is ${formatMoney(matches.reduce((n, e) => n + (e.shares.find((x) => x.userId === involvedId)?.sharePaise ?? 0), 0))}`
+          : "";
+        const filtered = tests.length
+          ? ` ${matches.length} ${matches.length === 1 ? "is" : "are"} ${filters.join(", ")}, ${formatMoney(matches.reduce((n, e) => n + e.amountPaise, 0))} in all${theirShare}${capped ? ` (searching only the newest ${fetched.length.toLocaleString("en-IN")}; narrow by month for the rest)` : ""}.`
+          : "";
+        const from = offset ?? 0;
+        const page = matches.slice(from, from + (limit ?? 50));
+        if (!page.length) return `${head}${filtered} Nothing ${tests.length ? "matches" : "to show"}${from ? ` after the first ${from}` : ""}.`;
+        const of = tests.length ? matches.length : count;
+        const shown = `Showing ${from + 1}–${from + page.length} of ${of.toLocaleString("en-IN")}${from + page.length < of ? `; use offset ${from + page.length} for more` : ""}.`;
+        return `${head}${filtered} ${shown}\n${page.map((e) => `- ${describeExpense(s, e)}`).join("\n")}`;
+      }),
+  );
+
+  server.registerTool(
+    "list_payments",
+    {
+      title: "List payments",
+      description: "Settle-up payments recorded in a space, newest first: who paid whom, how much, the date, the month it settles and the note.",
+      inputSchema: {
+        space: spaceArg,
+        month: z.string().max(40).optional().describe("Only payments settling this month (2026-10, October, last month). Leave out for all."),
+        person: z.string().optional().describe("Only payments this person made or received."),
+      },
+      annotations: READ,
+    },
+    ({ space, month, person }) =>
+      run(async () => {
+        const s = await loadSpace(api, me, space);
+        const m = toMonth(month);
+        const who = person ? findMember(s, person) : null;
+        const all = await api.call<Settlement[]>("GET", `/spaces/${s.detail.id}/settlements${m ? `?month=${m}` : ""}`);
+        const pays = who ? all.filter((p) => p.fromUserId === who.id || p.toUserId === who.id) : all;
+        const where = `${s.detail.name}${m ? `, settling ${monthLabel(m)}` : ""}${who ? `, involving ${s.name(who.id)}` : ""}`;
+        if (!pays.length) return `No payments in ${where}.`;
+        const total = pays.reduce((n, p) => n + p.amountPaise, 0);
+        const lines = pays.map((p) => `- ${p.paidOn} · ${s.name(p.fromUserId)} paid ${s.name(p.toUserId)} ${formatMoney(p.amountPaise)} · for ${monthLabel(p.period)}${p.note ? ` · note: ${p.note}` : ""} · id ${p.id}`);
+        return `${pays.length} ${pays.length === 1 ? "payment" : "payments"} in ${where}, ${formatMoney(total)} in all.\n${lines.join("\n")}`;
       }),
   );
 
@@ -423,21 +574,27 @@ function buildServer(api: Api, me: Me): McpServer {
     "edit_expense",
     {
       title: "Edit an expense",
-      description: "Changes an expense. Send only what changes; the rest stays. Get the id from list_expenses.",
+      description:
+        "Changes an expense. Send only what changes; the rest stays, including the split type and its percentages or shares when only the amount changes. Get the id and version from list_expenses.",
       inputSchema: {
         expense_id: z.uuid().describe("The expense's id, from list_expenses."),
-        version: z.number().int().positive().optional().describe("The version you saw. If someone changed it since, the edit is refused."),
+        version: z.number().int().positive().describe("The version you saw in list_expenses. If someone changed it since, the edit is refused so nothing is overwritten."),
         ...expenseInput.partial().shape,
       },
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
     ({ expense_id, version, ...changes }) =>
       run(async () => {
+        if (Object.values(changes).every((v) => v === undefined)) return "Nothing to change: no fields were given, so the expense was left as it is.";
         const current = await api.call<Expense>("GET", `/expenses/${expense_id}`);
-        if (version !== undefined && version !== current.version) {
+        if (version !== current.version) {
           throw new ToolError(`Someone changed this expense since (now version ${current.version}). Look at it again first.`);
         }
         const s = await loadSpace(api, me, current.spaceId);
+        // New values without a type keep the current type (a 60/40 percent split edited to 70/30 stays percent).
+        if (changes.split_values !== undefined && changes.split_type === undefined && changes.split_between === undefined && current.splitType !== "equal") {
+          changes.split_type = current.splitType;
+        }
         const resplit = changes.split_type !== undefined || changes.split_between !== undefined || changes.split_values !== undefined;
         const built = expenseBody(s, {
           description: changes.description ?? current.description,
@@ -451,7 +608,7 @@ function buildServer(api: Api, me: Me): McpServer {
         const body = resplit || current.splitType === "equal"
           ? built
           : { ...built, splitType: current.splitType, splits: current.shares.map((x) => ({ userId: x.userId, value: x.splitValue })) };
-        const e = await api.call<Expense>("PATCH", `/expenses/${expense_id}`, { version: current.version, ...body });
+        const e = await api.call<Expense>("PATCH", `/expenses/${expense_id}`, { version, ...body });
         return `Updated: ${describeExpense(s, e)}\n${await myStanding(api, s)}`;
       }),
   );

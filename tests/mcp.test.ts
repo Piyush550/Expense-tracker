@@ -63,7 +63,7 @@ describe("MCP server", () => {
       const client = await connect(key, via);
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name).sort()).toEqual(
-        ["add_expense", "add_expenses", "edit_expense", "get_balances", "get_space", "list_expenses", "list_spaces", "record_payment"].sort(),
+        ["add_expense", "add_expenses", "edit_expense", "get_balances", "get_space", "list_expenses", "list_payments", "list_spaces", "record_payment"].sort(),
       );
       expect(tools.find((t) => t.name === "list_spaces")?.annotations?.readOnlyHint).toBe(true);
       await client.close();
@@ -135,7 +135,7 @@ describe("MCP server", () => {
     const added = await tool(client, "add_expense", { space: "Flat 4B", description: "Dinner", amount: 900, split_between: ["me", "Bala"], request_id: requestId });
     expect(added.isError).toBe(false);
     expect(added.text).toMatch(/₹900 · paid by asha \(you\) · split equally: (asha \(you\) ₹450, bala ₹450|bala ₹450, asha \(you\) ₹450)/);
-    expect(added.text).toContain("You're owed ₹450 in Flat 4B.");
+    expect(added.text).toContain("You're owed ₹450 in Flat 4B (all time).");
     await tool(client, "add_expense", { space: "Flat 4B", description: "Dinner", amount: 900, split_between: ["me", "Bala"], request_id: requestId });
 
     // Assistants reuse made-up request ids: the same id with different details is a new expense.
@@ -203,7 +203,7 @@ describe("MCP server", () => {
     expect(stale).toMatchObject({ isError: true });
     expect(stale.text).toContain("now version 2");
 
-    const resplit = await tool(client, "edit_expense", { expense_id: gas.id, amount: 400, split_type: "equal", split_between: ["everyone"] });
+    const resplit = await tool(client, "edit_expense", { expense_id: gas.id, version: 2, amount: 400, split_type: "equal", split_between: ["everyone"] });
     expect(resplit.text).toContain("split equally");
 
     const paid = await tool(client, "record_payment", { space: "Flat 4B", from: "bala", to: "me", amount: 250, month: "October 2026" });
@@ -222,5 +222,161 @@ describe("MCP server", () => {
     const client = await connect(await makeKey(person("dev")));
     expect((await tool(client, "list_spaces")).text).toContain("aren't in any space");
     expect(await tool(client, "list_expenses", { space: "Flat 4B" })).toMatchObject({ isError: true });
+  });
+});
+
+// Regressions for the failures found by the acceptance audit in docs/MCP_TEST_PROMPTS.md (K01–K10).
+describe("MCP server: acceptance-audit regressions", () => {
+  const all = async (spaceId: string) => (await api.call<Expense[]>(asha, "GET", `/spaces/${spaceId}/expenses`)).body;
+  const group = async (spaceId: string, name: string, memberIds: string[]) =>
+    expect((await api.call(asha, "POST", `/spaces/${spaceId}/groups`, { name, memberIds })).status).toBe(201);
+
+  it("refuses money with more than 2 decimals instead of rounding it (K06)", async () => {
+    const { space } = await flat();
+    const client = await connect(await makeKey());
+    const amount = await tool(client, "add_expense", { space: "Flat 4B", description: "Gum", amount: 1.005 });
+    expect(amount).toMatchObject({ isError: true });
+    expect(amount.text).toContain("more than 2 decimal places");
+    const exact = await tool(client, "add_expense", { space: "Flat 4B", description: "Gum", amount: 1, split_type: "exact", split_values: [{ person: "me", value: 0.504 }, { person: "bala", value: 0.496 }] });
+    expect(exact.text).toContain("more than 2 decimal places");
+    const pct = await tool(client, "add_expense", { space: "Flat 4B", description: "Gum", amount: 3, split_type: "percent", split_values: [{ person: "me", value: 33.333 }, { person: "bala", value: 66.667 }] });
+    expect(pct.text).toContain("more than 2 decimal places");
+    expect(await all(space.id)).toHaveLength(0);
+    expect((await tool(client, "add_expense", { space: "Flat 4B", description: "Gum", amount: 1.01, split_between: ["me", "bala"] })).isError).toBe(false);
+    expect((await all(space.id))[0]!.amountPaise).toBe(101);
+  });
+
+  it("treats a retry with the people in another order as the same request (K04)", async () => {
+    const { space } = await flat();
+    const client = await connect(await makeKey());
+    const base = { space: "Flat 4B", description: "Tea", amount: 80, date: "2026-10-21", request_id: newId() };
+    await tool(client, "add_expense", { ...base, split_between: ["me", "bala"] });
+    await tool(client, "add_expense", { ...base, split_between: ["bala", "me"] });
+    expect(await all(space.id)).toHaveLength(1);
+    await tool(client, "add_expense", { ...base, split_between: ["bala", "chen"] });
+    expect(await all(space.id)).toHaveLength(2);
+  });
+
+  it("edits: keeps the split type for new values, requires the version, and skips empty edits (K01, K07, E14)", async () => {
+    const { space, ashaId, chenId } = await flat();
+    const client = await connect(await makeKey());
+    await tool(client, "add_expense", { space: "Flat 4B", description: "Cab", amount: 100, split_type: "percent", split_values: [{ person: "me", value: 60 }, { person: "chen", value: 40 }] });
+    const cab = (await all(space.id))[0]!;
+    const r = await tool(client, "edit_expense", { expense_id: cab.id, version: 1, split_values: [{ person: "me", value: 70 }, { person: "chen", value: 30 }] });
+    expect(r.isError).toBe(false);
+    expect(r.text).toMatch(/asha \(you\) ₹70 \(70%\)/);
+    const after = (await all(space.id))[0]!;
+    expect(after.splitType).toBe("percent");
+    expect(after.shares.find((s) => s.userId === ashaId)?.sharePaise).toBe(7000);
+    expect(after.shares.find((s) => s.userId === chenId)?.sharePaise).toBe(3000);
+
+    const noVersion = await tool(client, "edit_expense", { expense_id: cab.id, description: "Taxi" });
+    expect(noVersion.isError).toBe(true);
+    expect((await all(space.id))[0]!.description).toBe("Cab");
+
+    const empty = await tool(client, "edit_expense", { expense_id: cab.id, version: 2 });
+    expect(empty.text).toContain("Nothing to change");
+    expect((await all(space.id))[0]!.version).toBe(2);
+  });
+
+  it("refuses empty or unusable splits instead of widening them to everyone (K02)", async () => {
+    const { space, balaId, chenId } = await flat();
+    await group(space.id, "Gone", [balaId, chenId]);
+    await api.call(asha, "DELETE", `/spaces/${space.id}/members/${balaId}`);
+    await api.call(asha, "DELETE", `/spaces/${space.id}/members/${chenId}`);
+    const client = await connect(await makeKey());
+    const empty = await tool(client, "add_expense", { space: "Flat 4B", description: "Tea", amount: 100, split_between: [] });
+    expect(empty.text).toContain("No one was picked");
+    const gone = await tool(client, "add_expense", { space: "Flat 4B", description: "Tea", amount: 100, split_between: ["Gone"] });
+    expect(gone.text).toContain('"Gone" has no current members');
+    expect(await all(space.id)).toHaveLength(0);
+  });
+
+  it("asks instead of guessing when a name means two different sets of people (K03)", async () => {
+    const { space, ashaId, balaId, chenId } = await flat();
+    await group(space.id, "bala", [ashaId, chenId]);
+    await group(space.id, "Everyone", [balaId, chenId]);
+    await group(space.id, "Pair", [ashaId, balaId]);
+    await group(space.id, "Pair", [balaId, chenId]);
+    const client = await connect(await makeKey());
+    const add = (split_between: string[], description = "Tea") => tool(client, "add_expense", { space: "Flat 4B", description, amount: 100, split_between });
+
+    expect((await add(["bala"])).text).toMatch(/both the person bala and the group "bala"/);
+    expect((await add(["Everyone"])).text).toMatch(/could mean everyone in Flat 4B or the group "Everyone"/);
+    expect((await add(["Pair"])).text).toMatch(/There are 2 groups called "Pair"/);
+    expect(await all(space.id)).toHaveLength(0);
+
+    await add(["group:bala"], "Group bala");
+    await add(["person:bala"], "Person bala");
+    await add(["group:Everyone"], "Group everyone");
+    const saved = await all(space.id);
+    const people = (d: string) => saved.find((e) => e.description === d)!.shares.map((s) => s.userId).sort();
+    expect(people("Group bala")).toEqual([ashaId, chenId].sort());
+    expect(people("Person bala")).toEqual([balaId]);
+    expect(people("Group everyone")).toEqual([balaId, chenId].sort());
+  });
+
+  it("reports a saved write as saved even if reading the balance afterwards fails (K05)", async () => {
+    const { space } = await flat();
+    const key = await makeKey();
+    const failing = createMcpApp({
+      fetch: (req: Request) =>
+        new URL(req.url).pathname.endsWith("/balances") ? new Response(JSON.stringify({ error: { code: "x", message: "down" } }), { status: 503 }) : api.app.fetch(req),
+    });
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://localhost/mcp/${key}`), { fetch: async (u, init) => failing.request(String(u), init) }));
+    const r = await tool(client, "add_expense", { space: "Flat 4B", description: "Tea", amount: 100 });
+    expect(r.isError).toBe(false);
+    expect(r.text).toMatch(/^Added to Flat 4B: .*\n\(Saved\. Your balance couldn't be read/s);
+    expect(await all(space.id)).toHaveLength(1);
+  });
+
+  it("filters and pages expenses, and counts every row past 5,000 (K08, K09, K11)", async () => {
+    const { space, ashaId, chenId } = await flat();
+    const client = await connect(await makeKey());
+    await tool(client, "add_expenses", {
+      space: "Flat 4B",
+      expenses: [
+        { description: "Taxi", amount: 600, paid_by: "chen", split_between: ["bala", "chen"], date: "2026-10-05" },
+        { description: "Power", amount: 900, notes: "electricity bill", split_between: ["me", "chen"], date: "2026-10-08" },
+        { description: "Snacks", amount: 300, split_between: ["me"], date: "2026-10-09" },
+      ],
+    });
+    expect((await tool(client, "list_expenses", { space: "Flat 4B", paid_by: "chen" })).text).toMatch(/1 is paid by chen, ₹600 in all\./);
+    const involving = await tool(client, "list_expenses", { space: "Flat 4B", involving: "chen" });
+    expect(involving.text).toMatch(/2 are involving chen, ₹1,500 in all, of which chen's share is ₹750\./);
+    expect((await tool(client, "list_expenses", { space: "Flat 4B", search: "ELECTRICITY" })).text).toMatch(/1 is matching "ELECTRICITY", ₹900 in all\.[\s\S]*Power/);
+    const page = await tool(client, "list_expenses", { space: "Flat 4B", limit: 2 });
+    expect(page.text).toMatch(/Showing 1–2 of 3; use offset 2 for more\./);
+    expect((await tool(client, "list_expenses", { space: "Flat 4B", limit: 2, offset: 2 })).text).toMatch(/Showing 3–3 of 3\.\n- 2026-10-05 · Taxi/);
+
+    await api.db.query(
+      `INSERT INTO expenses (id, space_id, description, amount_paise, payer_id, split_type, spent_on, created_by, updated_by)
+       SELECT gen_random_uuid(), $1, 'Vol ' || g, 100, $2, 'equal', '2026-09-15', $2, $2 FROM generate_series(1, 5001) g`,
+      [space.id, ashaId],
+    );
+    await api.db.query(`INSERT INTO expense_shares (expense_id, user_id, share_paise) SELECT id, $2, 100 FROM expenses WHERE space_id = $1 AND description LIKE 'Vol %'`, [space.id, chenId]);
+    expect((await tool(client, "list_expenses", { space: "Flat 4B", month: "2026-09", limit: 1 })).text).toMatch(/^5,001 expenses in Flat 4B, September 2026, ₹5,001 in all\./);
+    expect((await tool(client, "list_expenses", { space: "Flat 4B", limit: 1 })).text).toMatch(/^5,004 expenses in Flat 4B, ₹6,801 in all\./);
+  });
+
+  it("lists payments with dates, months and notes (K10)", async () => {
+    const { space, ashaId, balaId, chenId } = await flat();
+    await api.call(asha, "POST", `/spaces/${space.id}/settlements`, { id: newId(), fromUserId: balaId, toUserId: ashaId, amountPaise: 20000, paidOn: "2026-11-03", period: "2026-10", note: "UPI" });
+    await api.call(asha, "POST", `/spaces/${space.id}/settlements`, { id: newId(), fromUserId: chenId, toUserId: ashaId, amountPaise: 5000, paidOn: "2026-09-30" });
+    const client = await connect(await makeKey());
+    const r = await tool(client, "list_payments", { space: "Flat 4B" });
+    expect(r.text).toMatch(/^2 payments in Flat 4B, ₹250 in all\.\n- 2026-11-03 · bala paid asha \(you\) ₹200 · for October 2026 · note: UPI/);
+    expect((await tool(client, "list_payments", { space: "Flat 4B", person: "chen" })).text).toMatch(/^1 payment in Flat 4B, involving chen, ₹50 in all\./);
+    expect((await tool(client, "list_payments", { space: "Flat 4B", month: "2026-10" })).text).toMatch(/^1 payment in Flat 4B, settling October 2026, ₹200/);
+  });
+
+  it("tells assistants that only the named people share a cost", async () => {
+    await flat();
+    const client = await connect(await makeKey());
+    const add = (await client.listTools()).tools.find((t) => t.name === "add_expense")!;
+    const props = (add.inputSchema as { properties: Record<string, { description?: string }> }).properties;
+    expect(props.split_between!.description).toContain('the payer and "me" are not added unless listed');
+    expect(client.getInstructions()).toContain('"Split with Chen" or "split with Boys" means only Chen or only the Boys group');
   });
 });

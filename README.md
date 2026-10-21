@@ -401,9 +401,11 @@ personal key, sent as `Authorization: Bearer et_…` or as the last part of the 
 - Code: `server/mcp.ts` (tools), `netlify/functions/mcp.ts` (function at `/mcp` and `/mcp/*`).
   Tools call the API in-process with the key, so they have exactly a key's scope: no deleting,
   merging or key management.
-- Tools: `list_spaces`, `get_space`, `list_expenses`, `get_balances`, `add_expense`,
-  `add_expenses`, `edit_expense`, `record_payment`. They take names ("me", people, groups),
-  rupees and dates like "yesterday", and reply in plain text.
+- Tools: `list_spaces`, `get_space`, `list_expenses` (month, payer, person and text filters;
+  paging; exact counts from the database), `list_payments`, `get_balances`, `add_expense`,
+  `add_expenses`, `edit_expense` (needs the version read), `record_payment`. They take names
+  ("me", people, groups; `group:`/`person:` when a name is both), rupees to the paisa (more
+  decimals are refused, not rounded) and dates like "yesterday", and reply in plain text.
 - `npm run dev:local` serves `/mcp` too. Try it with `npx @modelcontextprotocol/inspector`.
 - Setup for users: [docs/AI_APPS_SETUP.md](docs/AI_APPS_SETUP.md). Design and the OAuth next
   step: [docs/MCP_SERVER_PLAN.md](docs/MCP_SERVER_PLAN.md).

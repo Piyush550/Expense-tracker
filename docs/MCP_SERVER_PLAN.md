@@ -94,18 +94,20 @@ Every tool acts as the signed-in user. Write tools are marked so assistants ask 
 |---|---|---|
 | `list_spaces` | Your spaces: kind (monthly/one-time), members, your balance in each | read |
 | `get_space` | One space: members, groups, quick actions, months with activity | read |
-| `list_expenses` | Expenses in a space, filterable by month, text, payer or person; newest first; capped | read |
+| `list_expenses` | Expenses in a space, filterable by month, text, payer or person; newest first; paged with `offset`; count and total come from the database, so they're exact past the 5,000-row list cap | read |
+| `list_payments` | Settle-up payments: date, who paid whom, the month settled, note; filter by month or person | read |
 | `get_balances` | Who owes whom, as "A pays C ₹x", plus each person's net, for a month or all time | read |
 | `add_expense` | Space, title, amount (₹), date ("today", "21 Oct"), paid by (name or "me"), split type (equal / exact / percent / shares) and people or a group. Returns a summary and your new balance | write |
-| `add_expenses` | Several expenses at once, sharing a date. Uses bulk add, so all are saved or none | write |
-| `edit_expense` | Change the title, amount, date, payer or split of an expense (from `list_expenses`). Uses version checks so it never overwrites someone else's edit | write |
+| `add_expenses` | Several expenses at once, each with its own date, payer and split. Uses bulk add, so all are saved or none | write |
+| `edit_expense` | Change the title, amount, date, payer or split of an expense (from `list_expenses`). The version read is required, so it never overwrites someone else's edit; new split values keep the current split type; an edit with no fields writes nothing | write |
 | `record_payment` | "Chen paid me 500 for September" | write |
 
 **Behaviour rules for the tools:**
 - **Names, not IDs.** Tools take space, people and group **names**, matched case-insensitively within the space; "me" means you. If a name is ambiguous or unknown, the tool returns an error listing the valid options, so the assistant asks you instead of guessing.
-- **Money is exact.** Amounts are accepted as text or numbers in rupees and converted to paise exactly, never through floats.
+- **Money is exact.** Amounts are numbers in rupees, converted to whole paise. More than 2 decimals (₹1.005, a ₹0.504 share, a 33.333% split) is refused with a message to ask the user, never rounded silently.
+- **Names that could mean two things are refused, not guessed.** A person and a group with the same name, two groups with one name, or a group called "Everyone" get an error listing both; `group:Name` / `person:Name` pick explicitly. An empty `split_between`, or a group whose people have all left, is refused instead of widening to everyone.
 - **Dates.** They're read with the app's own date parser (`shared/dates.ts`). Bare days land in the current month, in India time.
-- **No duplicates on retry.** Write tools accept an optional `request_id` and pass it to the API's existing idempotency (client-chosen IDs), so a retried call can't add the same expense twice.
+- **No duplicates on retry.** Write tools accept an optional `request_id`. The row id is derived from it plus the resolved content (people sorted), so a true retry is saved once, even with the people listed in another order, while a reused id with different details makes a new row rather than silently returning the old one. A write that saved is reported as saved even if the balance read after it fails.
 - **Readable replies.** Each reply is short text the assistant can repeat back ("Added to Flat 4B: … · split equally … You're owed ₹450 in Flat 4B."). Errors come back as readable tool errors, not protocol errors, so the assistant can relay them.
 - **Hints for assistants.** Tool annotations: `readOnlyHint` on read tools; `destructiveHint: false` on write tools; `idempotentHint` where a `request_id` is given.
 

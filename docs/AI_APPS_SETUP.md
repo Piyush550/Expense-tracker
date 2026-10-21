@@ -50,16 +50,19 @@ Developer mode is a ChatGPT beta and depends on your plan. Some plans allow only
 |---|---|
 | `list_spaces` | "Which spaces am I in and where do I stand?" |
 | `get_space` | "Who's in Flat 4B? What groups are there?" |
-| `list_expenses` | "Show October's expenses in Flat 4B." |
+| `list_expenses` | "Show October's expenses in Flat 4B." "Which expenses involve Bala?" "Find the electricity bills." (filters: month, who paid, who has a share, text; pages past 50) |
+| `list_payments` | "Show the payments Bala made, with dates and notes." |
 | `get_balances` | "Who owes whom in Goa trip?" "How do we settle last month?" |
 | `add_expense` | "Add ₹1,240 groceries to Flat 4B, Chen paid, split with the Boys group." "Cab ₹1000, me 60%, Bala 40%." |
 | `add_expenses` | "Add these from the trip: …" (up to 50; all are saved, or none) |
 | `edit_expense` | "Change yesterday's dinner to ₹950." |
 | `record_payment` | "Bala paid me ₹500 for October." |
 
-- **Names**: use people's names (first names work if they're unique), group names, or "me". If a name doesn't match, the assistant is told the valid choices and asks you.
+- **Names**: use people's names (first names work if they're unique), group names, or "me". If a name doesn't match, or could mean two things (a person and a group with the same name, two groups with one name), the assistant is told the choices and asks you.
+- **Who shares**: only the people or groups you name share the cost. "Split with Chen" means Chen alone; say "between me and Chen" to include yourself.
 - **Defaults**: you paid, split equally between everyone in the space, dated today (India time).
-- **Amounts** are in rupees.
+- **Amounts** are in rupees, to the paisa. An amount with more decimals (₹1.005) is refused, never rounded.
+- **Edits** need the version the assistant last saw, so an edit made meanwhile in the app is never overwritten.
 - **Deleting** isn't possible here. Do it in the app.
 
 Expenses added this way appear for everyone in the space, as if you'd added them in the app.
