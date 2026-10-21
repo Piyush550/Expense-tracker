@@ -94,8 +94,8 @@ Every tool acts as the signed-in user. Write tools are marked so assistants ask 
 |---|---|---|
 | `list_spaces` | Your spaces: kind (monthly/one-time), members, your balance in each | read |
 | `get_space` | One space: members, groups, quick actions, months with activity | read |
-| `list_expenses` | Expenses in a space, filterable by month, text, payer or person; newest first; paged with `offset`; count and total come from the database, so they're exact past the 5,000-row list cap | read |
-| `list_payments` | Settle-up payments: date, who paid whom, the month settled, note; filter by month or person | read |
+| `list_expenses` | Expenses in a space, filterable by month, text, payer or person (people who have left included); newest first; paged with `offset`. Filtering, paging, counts and totals all run in the database (`/expenses/page`), so nothing is lost past any row cap | read |
+| `list_payments` | Settle-up payments: date, who paid whom, the month settled, note; filter by month or person (people who have left included); paged (default 50) with exact count and total (`/settlements/page`) | read |
 | `get_balances` | Who owes whom, as "A pays C ₹x", plus each person's net, for a month or all time | read |
 | `add_expense` | Space, title, amount (₹), date ("today", "21 Oct"), paid by (name or "me"), split type (equal / exact / percent / shares) and people or a group. Returns a summary and your new balance | write |
 | `add_expenses` | Several expenses at once, each with its own date, payer and split. Uses bulk add, so all are saved or none | write |

@@ -40,6 +40,20 @@ Every server failure below was fixed in `server/mcp.ts`, each with a regression 
 - V01–06's stored ledger matches §5 exactly.
 - In the first re-run, V04 paused to confirm the future 3 November date before recording. That's cautious model behaviour, not a server error. A second run recorded it with a warning.
 
+## Second review (same day)
+
+A further review found five more gaps. All are fixed, with regression tests in `tests/mcp.test.ts`:
+
+| Gap | Fix |
+|---|---|
+| With 5,001 expenses, offset 5,000 returned nothing: paging ran over a list the API capped at 5,000 | New `/spaces/:id/expenses/page` route: filters, paging, count, total and the `involving` share all run in the database. Offset 5,000 now returns the 5,001st row |
+| `list_payments` with 5,001 payments reported 5,000 / ₹5,000 and returned about 500,000 characters | New `/spaces/:id/settlements/page` route: exact count and total, pages of 50 by default (`limit` up to 200, `offset`), and a "Showing … of …" line |
+| Filtering history by someone who had left gave "No person called Bala" | Read filters (`paid_by`, `involving`, `person`) also match former members. New expenses and payments still take only current members |
+| A percent split with `split_between: ["me"]` but values for me and Chen saved both | When both are given they must name the same people; otherwise the call is refused with an explanation |
+| The smoke runner required exactly 8 tools, but the server now has 9 | It checks the required tool names, and that no delete tool exists, instead of a count |
+
+`%` and `_` in a search are matched literally.
+
 ## Summary
 
 | Part | Result |

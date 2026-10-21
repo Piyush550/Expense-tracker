@@ -366,7 +366,7 @@ describe("MCP server: acceptance-audit regressions", () => {
     await api.call(asha, "POST", `/spaces/${space.id}/settlements`, { id: newId(), fromUserId: chenId, toUserId: ashaId, amountPaise: 5000, paidOn: "2026-09-30" });
     const client = await connect(await makeKey());
     const r = await tool(client, "list_payments", { space: "Flat 4B" });
-    expect(r.text).toMatch(/^2 payments in Flat 4B, ₹250 in all\.\n- 2026-11-03 · bala paid asha \(you\) ₹200 · for October 2026 · note: UPI/);
+    expect(r.text).toMatch(/^2 payments in Flat 4B, ₹250 in all\. Showing 1–2 of 2\.\n- 2026-11-03 · bala paid asha \(you\) ₹200 · for October 2026 · note: UPI/);
     expect((await tool(client, "list_payments", { space: "Flat 4B", person: "chen" })).text).toMatch(/^1 payment in Flat 4B, involving chen, ₹50 in all\./);
     expect((await tool(client, "list_payments", { space: "Flat 4B", month: "2026-10" })).text).toMatch(/^1 payment in Flat 4B, settling October 2026, ₹200/);
   });
@@ -378,5 +378,68 @@ describe("MCP server: acceptance-audit regressions", () => {
     const props = (add.inputSchema as { properties: Record<string, { description?: string }> }).properties;
     expect(props.split_between!.description).toContain('the payer and "me" are not added unless listed');
     expect(client.getInstructions()).toContain('"Split with Chen" or "split with Boys" means only Chen or only the Boys group');
+  });
+
+  it("pages and filters past 5,000 rows in the database, for expenses and payments", async () => {
+    const { space, ashaId, chenId } = await flat();
+    await api.db.query(
+      `INSERT INTO expenses (id, space_id, description, amount_paise, payer_id, split_type, spent_on, created_at, created_by, updated_by)
+       SELECT gen_random_uuid(), $1, 'Vol ' || g, 100, $2, 'equal', '2026-10-15', now() - g * interval '1 second', $2, $2 FROM generate_series(1, 5001) g`,
+      [space.id, ashaId],
+    );
+    await api.db.query(`INSERT INTO expense_shares (expense_id, user_id, share_paise) SELECT id, $2, 100 FROM expenses WHERE space_id = $1`, [space.id, ashaId]);
+    // The oldest row is the 5,001st: reachable by offset, and findable by a filter.
+    await api.db.query(`UPDATE expenses SET description = 'Oldest 100% juice_box' WHERE space_id = $1 AND description = 'Vol 5001'`, [space.id]);
+    const client = await connect(await makeKey());
+    const end = await tool(client, "list_expenses", { space: "Flat 4B", limit: 200, offset: 4900 });
+    expect(end.text).toMatch(/^5,001 expenses in Flat 4B, ₹5,001 in all\. Showing 4,901–5,001 of 5,001\./);
+    expect((await tool(client, "list_expenses", { space: "Flat 4B", limit: 200, offset: 4800 })).text).toMatch(/Showing 4,801–5,000 of 5,001; use offset 5000 for more\./);
+    const last = await tool(client, "list_expenses", { space: "Flat 4B", limit: 200, offset: 5000 });
+    expect(last.text).toMatch(/Showing 5,001–5,001 of 5,001\.\n- 2026-10-15 · Oldest 100% juice_box/);
+    // "%" and "_" are literal text, not wildcards.
+    const found = await tool(client, "list_expenses", { space: "Flat 4B", search: "100% juice_" });
+    expect(found.text).toMatch(/ 1 is matching "100% juice_", ₹1 in all\. Showing 1–1 of 1\./);
+    expect((await tool(client, "list_expenses", { space: "Flat 4B", search: "1_0" })).text).toMatch(/ 0 are matching "1_0", ₹0 in all\. Nothing matches\./);
+
+    await api.db.query(
+      `INSERT INTO settlements (id, space_id, from_user_id, to_user_id, amount_paise, paid_on, period, created_at, created_by)
+       SELECT gen_random_uuid(), $1, $2, $3, 100, '2026-10-16', '2026-10-01', now() - g * interval '1 second', $3 FROM generate_series(1, 5001) g`,
+      [space.id, chenId, ashaId],
+    );
+    const pays = await tool(client, "list_payments", { space: "Flat 4B" });
+    expect(pays.text).toMatch(/^5,001 payments in Flat 4B, ₹5,001 in all\. Showing 1–50 of 5,001; use offset 50 for more\./);
+    expect(pays.text.split("\n")).toHaveLength(51);
+    expect((await tool(client, "list_payments", { space: "Flat 4B", offset: 5000 })).text).toMatch(/Showing 5,001–5,001 of 5,001\.\n- 2026-10-16 · chen paid asha/);
+  });
+
+  it("finds people who have left when reading history, but not for new expenses or payments", async () => {
+    const { space, ashaId, balaId } = await flat();
+    await api.call(asha, "POST", `/spaces/${space.id}/expenses`, { id: newId(), description: "Movie", amountPaise: 400, payerId: ashaId, splitType: "equal", spentOn: "2026-10-01", splits: [{ userId: ashaId }, { userId: balaId }] });
+    await api.call(asha, "POST", `/spaces/${space.id}/settlements`, { id: newId(), fromUserId: balaId, toUserId: ashaId, amountPaise: 200, paidOn: "2026-10-02" });
+    expect((await api.call(asha, "DELETE", `/spaces/${space.id}/members/${balaId}`)).status).toBe(204);
+    const client = await connect(await makeKey());
+    expect((await tool(client, "list_expenses", { space: "Flat 4B", involving: "bala" })).text).toMatch(/ 1 is involving bala, ₹4 in all, of which bala's share is ₹2\./);
+    expect((await tool(client, "list_payments", { space: "Flat 4B", person: "bala" })).text).toMatch(/^1 payment in Flat 4B, involving bala, ₹2 in all\./);
+    const add = await tool(client, "add_expense", { space: "Flat 4B", description: "Tea", amount: 10, split_between: ["bala"] });
+    expect(add).toMatchObject({ isError: true });
+    expect(add.text).toContain('No person called "bala"');
+    expect((await tool(client, "record_payment", { space: "Flat 4B", from: "bala", to: "me", amount: 1 })).isError).toBe(true);
+  });
+
+  it("refuses split_between and split_values that name different people", async () => {
+    const { space } = await flat();
+    const client = await connect(await makeKey());
+    const bad = await tool(client, "add_expense", {
+      space: "Flat 4B", description: "Cab", amount: 100, split_type: "percent", split_between: ["me"],
+      split_values: [{ person: "me", value: 60 }, { person: "chen", value: 40 }],
+    });
+    expect(bad).toMatchObject({ isError: true });
+    expect(bad.text).toMatch(/split_between \(asha \(you\)\) and split_values \(asha \(you\), chen\) name different people/);
+    expect(await all(space.id)).toHaveLength(0);
+    const same = await tool(client, "add_expense", {
+      space: "Flat 4B", description: "Cab", amount: 100, split_type: "percent", split_between: ["chen", "me"],
+      split_values: [{ person: "me", value: 60 }, { person: "chen", value: 40 }],
+    });
+    expect(same.isError).toBe(false);
   });
 });

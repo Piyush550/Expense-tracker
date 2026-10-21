@@ -20,6 +20,8 @@ const config = join(dir, "mcp.json");
 writeFileSync(config, JSON.stringify({ mcpServers: { expense: { type: "http", url } } }));
 
 const S = "MCP Test Flat";
+/** The tools the server must expose. */
+const TOOLS = ["list_spaces", "get_space", "list_expenses", "list_payments", "get_balances", "add_expense", "add_expenses", "edit_expense", "record_payment"];
 /** [prompt, tools Claude must call (in any order), tools it must not call, should a tool error] */
 const CASES = [
   ["What Expense Tracker tools do you have? List their names only.", [], [], false],
@@ -80,7 +82,13 @@ for (const [i, [prompt, must, mustNot, expectError]] of CASES.entries()) {
   const called = r.calls.map((c) => c.name);
   const problems = [];
   if (!r.connected) problems.push("MCP server not connected");
-  if (i === 0 && r.tools.length !== 8) problems.push(`expected 8 tools, got ${r.tools.length}`);
+  if (i === 0) {
+    // Check the catalog by name, so adding a read tool doesn't break this check; no delete tool may appear.
+    const missing = TOOLS.filter((t) => !r.tools.includes(t));
+    if (missing.length) problems.push(`missing tools: ${missing.join(", ")}`);
+    const deleting = r.tools.filter((t) => /delete|remove/i.test(t));
+    if (deleting.length) problems.push(`unexpected delete tools: ${deleting.join(", ")}`);
+  }
   for (const t of must) if (!called.includes(t)) problems.push(`did not call ${t}`);
   for (const t of mustNot) if (called.includes(t)) problems.push(`should not call ${t}`);
   if (expectError && !r.errors) problems.push("expected a tool error to relay");

@@ -3,12 +3,12 @@
 // membership before touching data.
 import { Hono, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import type { ApiToken, Balances, Expense, Me, MonthSummary, NewApiToken, Person, QuickExpenseResult, QuickOptions, Settlement, SpaceDetail } from "../shared/api";
+import type { ApiToken, Balances, Expense, ExpensePage, Me, MonthSummary, NewApiToken, Person, QuickExpenseResult, QuickOptions, Settlement, SettlementPage, SpaceDetail } from "../shared/api";
 import { activeMemberIds, assertUuid, requireMember, requireOwner } from "./access";
 import type { VerifyToken } from "./auth";
 import { pgCode, type Db, type Queryable } from "./db";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "./errors";
-import { findExpense, getSettlement, listExpenses, listSettlements, replaceShares, sharesFor } from "./expenses";
+import { findExpense, getSettlement, listExpenses, listSettlements, pageExpenses, pageSettlements, replaceShares, sharesFor } from "./expenses";
 import { createSpaceGroup, findSpaceGroup, listSpaceGroups, loadQuickActions, saveQuickActions, setSpaceGroupMembers } from "./groups";
 import { addEmailToSpace, addToSpace, ensureSpaceKeepsOwner, listSpaces, loadSpace } from "./spaces";
 import { type Ctx, type Env, parse, readBody } from "./http";
@@ -357,6 +357,11 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   app.get("/spaces/:id/months", async (c) => c.json<MonthSummary[]>(await monthlySummary(c.var.db, c.req.param("id"))));
 
   // ── Expenses (any member) ─────────────────────────────────────────────────────────────
+  // One filtered page plus exact totals (the AI-app listing). Every filter and the paging run in the database.
+  app.get("/spaces/:id/expenses/page", async (c) =>
+    c.json<ExpensePage>(await pageExpenses(c.var.db, c.req.param("id"), parse(s.expensePageQuery, c.req.query()))),
+  );
+
   app.get("/spaces/:id/expenses", async (c) => {
     const { month } = parse(s.listQuery, c.req.query());
     return c.json<Expense[]>(await listExpenses(c.var.db, c.req.param("id"), month));
@@ -466,6 +471,10 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   });
 
   // ── Payments (settlements, any member) ────────────────────────────────────────────────
+  app.get("/spaces/:id/settlements/page", async (c) =>
+    c.json<SettlementPage>(await pageSettlements(c.var.db, c.req.param("id"), parse(s.settlementPageQuery, c.req.query()))),
+  );
+
   app.get("/spaces/:id/settlements", async (c) => {
     const { month } = parse(s.listQuery, c.req.query());
     return c.json<Settlement[]>(await listSettlements(c.var.db, c.req.param("id"), month));

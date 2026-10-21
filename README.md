@@ -349,6 +349,8 @@ Errors look like `{ "error": { "code", "message" } }`.
 | PATCH / DELETE | `/tokens/:id` | sign-in only: rename or new expiry from today / delete a revoked or expired key |
 | POST | `/tokens/:id/regenerate`, `/tokens/:id/revoke` | sign-in only: new secret for the same entry (old one stops at once) / revoke |
 | GET | `/expenses/:id` | one expense, if you're in its space |
+| GET | `/spaces/:id/expenses/page` | `?month&payer&involving&q&limit&offset`: one page plus the count, total and (with `involving`) that person's share of **every** match; filtering and paging run in the database (used by the MCP server) |
+| GET | `/spaces/:id/settlements/page` | `?month&person&limit&offset`: one page of payments plus the count and total of every match |
 | GET, POST | `/quick/options` | key or sign-in (keys also work on all other non-destructive routes): `{ labels, presets }`, each space as "Everyone" plus its quick-action groups. POST is accepted too, because a GET with a body (an easy Shortcuts mistake) fails at Netlify |
 | POST | `/quick/people` | key or sign-in: `{ preset }` → plain JSON list of the space's member names, for "Who shared it?" |
 | POST | `/quick/expense` | key or sign-in: `{ preset, amount, title?, date?, requestId?, people? }` (`people`: names as a list or one per line; empty = the preset's people): equal split, paid by you, dated today (India time) by default; returns `{ message, expense }` |

@@ -10,7 +10,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Balances, Expense, Group, Me, Member, MonthSummary, Settlement, SpaceDetail, SpaceSummary } from "../shared/api";
+import type { Balances, Expense, ExpensePage, Group, Me, Member, Settlement, SettlementPage, SpaceDetail, SpaceSummary } from "../shared/api";
 import { MONTH_RE, monthLabel, shiftMonth } from "../shared/dates";
 import { formatMoney, MAX_AMOUNT_PAISE } from "../shared/money";
 import { PERCENT_TOTAL, type SplitType } from "../shared/split";
@@ -100,12 +100,15 @@ async function loadSpace(api: Api, me: Me, wanted: string): Promise<Space> {
   return { detail, groups, me, name: (id) => names.get(id) ?? "someone who left" };
 }
 
-/** A member by name, email, id, or "me". By name only current members; by id anyone. */
-function findMember(space: Space, wanted: string): Member {
+/**
+ * A member by name, email, id, or "me". New expenses and payments take only current members by
+ * name (anyone by id); `former` also finds people who have left, for reading their history.
+ */
+function findMember(space: Space, wanted: string, former = false): Member {
   const w = norm(wanted);
   const byId = space.detail.members.find((m) => m.id === wanted.trim());
   if (byId) return byId;
-  const members = space.detail.members.filter((m) => m.active);
+  const members = space.detail.members.filter((m) => former || m.active);
   if (ME_WORDS.has(w)) {
     const me = members.find((m) => m.id === space.me.id);
     if (!me) throw new ToolError(`You aren't a member of ${space.detail.name}.`);
@@ -283,6 +286,17 @@ function expenseBody(space: Space, a: ExpenseArgs) {
     });
   }
   if (new Set(splits.map((s) => s.userId)).size !== splits.length) throw new ToolError("Someone is listed twice in the split.");
+  // Both lists given must name the same people; otherwise one would be silently ignored.
+  if (a.split_between?.length && a.split_values?.length) {
+    const between = new Set(findPeople(space, a.split_between).map((m) => m.id));
+    const values = new Set(a.split_values.map((v) => findMember(space, v.person).id));
+    if (between.size !== values.size || [...values].some((id) => !between.has(id))) {
+      const names = (ids: Set<string>) => [...ids].map((id) => space.name(id)).join(", ");
+      throw new ToolError(
+        `split_between (${names(between)}) and split_values (${names(values)}) name different people. For an unequal split, list each person once in split_values and leave split_between out.`,
+      );
+    }
+  }
   return {
     description: a.description,
     amountPaise,
@@ -334,6 +348,14 @@ async function run(body: () => Promise<string>): Promise<ToolResult> {
 }
 
 const READ = { readOnlyHint: true, openWorldHint: false } as const;
+
+/** A query string from the values that are set. */
+const query = (o: Record<string, string | number | undefined>) =>
+  new URLSearchParams(Object.entries(o).filter((e): e is [string, string | number] => e[1] !== undefined).map(([k, v]) => [k, String(v)])).toString();
+
+/** "Showing 51–100 of 5,001; use offset 100 for more." */
+const showing = (from: number, n: number, total: number) =>
+  `Showing ${(from + 1).toLocaleString("en-IN")}–${(from + n).toLocaleString("en-IN")} of ${total.toLocaleString("en-IN")}${from + n < total ? `; use offset ${from + n} for more` : ""}.`;
 const spaceArg = z.string().min(1).describe("The space's name (or id), from list_spaces.");
 const monthArg = z.string().max(40).optional().describe("Only this month: 2026-10, October, this month or last month. Leave out for all time.");
 const requestIdArg = z.uuid().optional().describe("Optional. Only for retrying this exact call: the same id with the same details is saved once.");
@@ -426,50 +448,27 @@ function buildServer(api: Api, me: Me): McpServer {
         const s = await loadSpace(api, me, space);
         const m = toMonth(month);
         const where = `${s.detail.name}${m ? `, ${monthLabel(m)}` : ""}`;
-        const filters: string[] = [];
-        const tests: ((e: Expense) => boolean)[] = [];
-        if (paid_by) {
-          const p = findMember(s, paid_by);
-          filters.push(`paid by ${s.name(p.id)}`);
-          tests.push((e) => e.payerId === p.id);
-        }
-        let involvedId: string | undefined;
-        if (involving) {
-          const p = findMember(s, involving);
-          involvedId = p.id;
-          filters.push(`involving ${s.name(p.id)}`);
-          tests.push((e) => e.shares.some((x) => x.userId === p.id && x.sharePaise > 0));
-        }
-        if (search?.trim()) {
-          const q = norm(search);
-          filters.push(`matching "${search.trim()}"`);
-          tests.push((e) => norm(`${e.description} ${e.remarks}`).includes(q));
-        }
-        const [fetched, months] = await Promise.all([
-          api.call<Expense[]>("GET", `/spaces/${s.detail.id}/expenses${m ? `?month=${m}` : ""}`),
-          api.call<MonthSummary[]>("GET", `/spaces/${s.detail.id}/months`),
-        ]);
-        // Exact count and total from the database; the list itself is capped at the newest 5,000.
-        const scope = m ? months.filter((x) => x.month === m) : months;
-        const count = scope.reduce((n, x) => n + x.expenseCount, 0);
-        const total = scope.reduce((n, x) => n + x.spentPaise, 0);
-        if (!count) return `No expenses in ${where}.`;
-        const capped = fetched.length < count;
-        const matches = tests.length ? fetched.filter((e) => tests.every((t) => t(e))) : fetched;
-        const head = `${count.toLocaleString("en-IN")} ${count === 1 ? "expense" : "expenses"} in ${where}, ${formatMoney(total)} in all.`;
-        // With "involving", that person's own share is what's usually asked for, not the expenses' totals.
-        const theirShare = involvedId
-          ? `, of which ${s.name(involvedId)}'s share is ${formatMoney(matches.reduce((n, e) => n + (e.shares.find((x) => x.userId === involvedId)?.sharePaise ?? 0), 0))}`
-          : "";
-        const filtered = tests.length
-          ? ` ${matches.length} ${matches.length === 1 ? "is" : "are"} ${filters.join(", ")}, ${formatMoney(matches.reduce((n, e) => n + e.amountPaise, 0))} in all${theirShare}${capped ? ` (searching only the newest ${fetched.length.toLocaleString("en-IN")}; narrow by month for the rest)` : ""}.`
-          : "";
+        // Filters name people who may have left since: history still counts them.
+        const payer = paid_by ? findMember(s, paid_by, true) : undefined;
+        const involved = involving ? findMember(s, involving, true) : undefined;
+        const text = search?.trim() || undefined;
+        const filters = [payer && `paid by ${s.name(payer.id)}`, involved && `involving ${s.name(involved.id)}`, text && `matching "${text}"`].filter(Boolean);
         const from = offset ?? 0;
-        const page = matches.slice(from, from + (limit ?? 50));
-        if (!page.length) return `${head}${filtered} Nothing ${tests.length ? "matches" : "to show"}${from ? ` after the first ${from}` : ""}.`;
-        const of = tests.length ? matches.length : count;
-        const shown = `Showing ${from + 1}–${from + page.length} of ${of.toLocaleString("en-IN")}${from + page.length < of ? `; use offset ${from + page.length} for more` : ""}.`;
-        return `${head}${filtered} ${shown}\n${page.map((e) => `- ${describeExpense(s, e)}`).join("\n")}`;
+        const page = await api.call<ExpensePage>(
+          "GET",
+          `/spaces/${s.detail.id}/expenses/page?${query({ month: m, payer: payer?.id, involving: involved?.id, q: text, limit: limit ?? 50, offset: from })}`,
+        );
+        // Counts and totals come from the database and cover every match, however many there are.
+        const all = filters.length ? await api.call<ExpensePage>("GET", `/spaces/${s.detail.id}/expenses/page?${query({ month: m, limit: 1 })}`) : page;
+        if (!all.total) return `No expenses in ${where}.`;
+        const head = `${all.total.toLocaleString("en-IN")} ${all.total === 1 ? "expense" : "expenses"} in ${where}, ${formatMoney(all.totalPaise)} in all.`;
+        // With "involving", that person's own share is what's usually asked for, not the expenses' totals.
+        const theirShare = involved && page.sharePaise !== null ? `, of which ${s.name(involved.id)}'s share is ${formatMoney(page.sharePaise)}` : "";
+        const filtered = filters.length
+          ? ` ${page.total.toLocaleString("en-IN")} ${page.total === 1 ? "is" : "are"} ${filters.join(", ")}, ${formatMoney(page.totalPaise)} in all${theirShare}.`
+          : "";
+        if (!page.items.length) return `${head}${filtered} Nothing ${filters.length ? "matches" : "to show"}${from ? ` after the first ${from.toLocaleString("en-IN")}` : ""}.`;
+        return `${head}${filtered} ${showing(from, page.items.length, page.total)}\n${page.items.map((e) => `- ${describeExpense(s, e)}`).join("\n")}`;
       }),
   );
 
@@ -477,26 +476,33 @@ function buildServer(api: Api, me: Me): McpServer {
     "list_payments",
     {
       title: "List payments",
-      description: "Settle-up payments recorded in a space, newest first: who paid whom, how much, the date, the month it settles and the note.",
+      description:
+        "Settle-up payments recorded in a space, newest first: who paid whom, how much, the date, the month it settles and the note. Page with offset; the count and total cover every match.",
       inputSchema: {
         space: spaceArg,
         month: z.string().max(40).optional().describe("Only payments settling this month (2026-10, October, last month). Leave out for all."),
-        person: z.string().optional().describe("Only payments this person made or received."),
+        person: z.string().optional().describe("Only payments this person made or received, including people who have since left."),
+        limit: z.number().int().min(1).max(200).optional().describe("At most this many (default 50)."),
+        offset: z.number().int().min(0).optional().describe("Skip this many first, to see the next page (default 0)."),
       },
       annotations: READ,
     },
-    ({ space, month, person }) =>
+    ({ space, month, person, limit, offset }) =>
       run(async () => {
         const s = await loadSpace(api, me, space);
         const m = toMonth(month);
-        const who = person ? findMember(s, person) : null;
-        const all = await api.call<Settlement[]>("GET", `/spaces/${s.detail.id}/settlements${m ? `?month=${m}` : ""}`);
-        const pays = who ? all.filter((p) => p.fromUserId === who.id || p.toUserId === who.id) : all;
+        const who = person ? findMember(s, person, true) : null;
+        const from = offset ?? 0;
+        const page = await api.call<SettlementPage>(
+          "GET",
+          `/spaces/${s.detail.id}/settlements/page?${query({ month: m, person: who?.id, limit: limit ?? 50, offset: from })}`,
+        );
         const where = `${s.detail.name}${m ? `, settling ${monthLabel(m)}` : ""}${who ? `, involving ${s.name(who.id)}` : ""}`;
-        if (!pays.length) return `No payments in ${where}.`;
-        const total = pays.reduce((n, p) => n + p.amountPaise, 0);
-        const lines = pays.map((p) => `- ${p.paidOn} · ${s.name(p.fromUserId)} paid ${s.name(p.toUserId)} ${formatMoney(p.amountPaise)} · for ${monthLabel(p.period)}${p.note ? ` · note: ${p.note}` : ""} · id ${p.id}`);
-        return `${pays.length} ${pays.length === 1 ? "payment" : "payments"} in ${where}, ${formatMoney(total)} in all.\n${lines.join("\n")}`;
+        if (!page.total) return `No payments in ${where}.`;
+        const head = `${page.total.toLocaleString("en-IN")} ${page.total === 1 ? "payment" : "payments"} in ${where}, ${formatMoney(page.totalPaise)} in all.`;
+        if (!page.items.length) return `${head} Nothing to show after the first ${from.toLocaleString("en-IN")}.`;
+        const lines = page.items.map((p) => `- ${p.paidOn} · ${s.name(p.fromUserId)} paid ${s.name(p.toUserId)} ${formatMoney(p.amountPaise)} · for ${monthLabel(p.period)}${p.note ? ` · note: ${p.note}` : ""} · id ${p.id}`);
+        return `${head} ${showing(from, page.items.length, page.total)}\n${lines.join("\n")}`;
       }),
   );
 

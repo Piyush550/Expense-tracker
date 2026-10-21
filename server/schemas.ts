@@ -90,6 +90,15 @@ export const createSettlement = z
 
 export const listQuery = z.object({ month: month.optional() });
 
+const pageFields = {
+  month: month.optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+};
+/** Filters and paging for one page of expenses; every filter runs in the database. */
+export const expensePageQuery = z.object({ ...pageFields, payer: id.optional(), involving: id.optional(), q: z.string().trim().max(100).optional() });
+export const settlementPageQuery = z.object({ ...pageFields, person: id.optional() });
+
 // ── Personal tokens and the phone shortcut ─────────────────────────────────────────────
 const lifetimeDays = z.number().int().min(1).max(3650).nullable();
 
