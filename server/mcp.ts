@@ -8,7 +8,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Balances, Expense, Group, Me, Member, Settlement, SpaceDetail, SpaceSummary } from "../shared/api";
 import { MONTH_RE, monthLabel, shiftMonth } from "../shared/dates";
@@ -22,7 +22,9 @@ type FetchApi = (req: Request) => Response | Promise<Response>;
 const VERSION = "1.0.0";
 const INSTRUCTIONS = `Expense Tracker: shared expenses in "spaces" (a flat, a trip), split between people.
 Amounts are in rupees (₹). People and spaces are named by name; "me" means the signed-in user.
-Start with list_spaces. Before adding, check names with get_space if unsure. Never guess an amount or who paid: ask.
+Start with list_spaces. Before adding, check names with get_space if unsure.
+Defaults when the user doesn't say: they paid, it is split equally between everyone in the space, dated today. Use them and mention them in your reply; don't ask about them.
+Ask only when the amount or what it was for is missing, or a name doesn't match. Never guess an amount.
 This connector cannot delete anything; for that, use the app.`;
 
 /** A readable failure; becomes the tool's error text. */
@@ -269,7 +271,20 @@ async function run(body: () => Promise<string>): Promise<ToolResult> {
 const READ = { readOnlyHint: true, openWorldHint: false } as const;
 const spaceArg = z.string().min(1).describe("The space's name (or id), from list_spaces.");
 const monthArg = z.string().max(40).optional().describe("Only this month: 2026-10, October, this month or last month. Leave out for all time.");
-const requestIdArg = z.uuid().optional().describe("Optional. Send the same id again when retrying, so nothing is added twice.");
+const requestIdArg = z.uuid().optional().describe("Optional. Only for retrying this exact call: the same id with the same details is saved once.");
+
+/**
+ * The row id for a write. With a request_id it is derived from that id and the exact content,
+ * so a retry of the same call is saved once, while an assistant that reuses a request_id for a
+ * different expense (they make up "random" ids that repeat) still gets a new row instead of
+ * silently getting the old one back.
+ */
+function rowId(requestId: string | undefined, content: unknown): string {
+  if (!requestId) return randomUUID();
+  const h = createHash("sha256").update(requestId).update("\0").update(JSON.stringify(content)).digest("hex");
+  const variant = ((parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 
 function buildServer(api: Api, me: Me): McpServer {
   const server = new McpServer({ name: "expense-tracker", title: "Expense Tracker", version: VERSION }, { instructions: INSTRUCTIONS });
@@ -372,7 +387,8 @@ function buildServer(api: Api, me: Me): McpServer {
     ({ space, request_id, ...args }) =>
       run(async () => {
         const s = await loadSpace(api, me, space);
-        const body = { id: request_id ?? randomUUID(), ...expenseBody(s, args) };
+        const fields = expenseBody(s, args);
+        const body = { id: rowId(request_id, { space: s.detail.id, ...fields }), ...fields };
         const e = await api.call<Expense>("POST", `/spaces/${s.detail.id}/expenses`, body);
         return `Added to ${s.detail.name}: ${describeExpense(s, e)}\n${await myStanding(api, s)}`;
       }),
@@ -391,7 +407,8 @@ function buildServer(api: Api, me: Me): McpServer {
         const s = await loadSpace(api, me, space);
         const rows = expenses.map(({ request_id, ...args }, i) => {
           try {
-            return { id: request_id ?? randomUUID(), ...expenseBody(s, args) };
+            const fields = expenseBody(s, args);
+            return { id: rowId(request_id, { space: s.detail.id, ...fields }), ...fields };
           } catch (err) {
             throw err instanceof ToolError ? new ToolError(`Expense ${i + 1}: ${err.message}`) : err;
           }
@@ -461,14 +478,10 @@ function buildServer(api: Api, me: Me): McpServer {
         const s = await loadSpace(api, me, space);
         const payer = findMember(s, from ?? "me");
         const payee = findMember(s, to);
+        const fields = { fromUserId: payer.id, toUserId: payee.id, amountPaise: paise(amount), paidOn: toDate(date), period: toMonth(month), note: note ?? "" };
         const p = await api.call<Settlement>("POST", `/spaces/${s.detail.id}/settlements`, {
-          id: request_id ?? randomUUID(),
-          fromUserId: payer.id,
-          toUserId: payee.id,
-          amountPaise: paise(amount),
-          paidOn: toDate(date),
-          period: toMonth(month),
-          note: note ?? "",
+          id: rowId(request_id, { space: s.detail.id, ...fields }),
+          ...fields,
         });
         return `Recorded: ${s.name(p.fromUserId)} paid ${s.name(p.toUserId)} ${formatMoney(p.amountPaise)} on ${p.paidOn} (for ${monthLabel(p.period)}) in ${s.detail.name}. id ${p.id}\n${await myStanding(api, s)}`;
       }),

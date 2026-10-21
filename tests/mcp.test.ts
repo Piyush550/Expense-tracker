@@ -138,6 +138,11 @@ describe("MCP server", () => {
     expect(added.text).toContain("You're owed ₹450 in Flat 4B.");
     await tool(client, "add_expense", { space: "Flat 4B", description: "Dinner", amount: 900, split_between: ["me", "Bala"], request_id: requestId });
 
+    // Assistants reuse made-up request ids: the same id with different details is a new expense.
+    await tool(client, "add_expense", { space: "Flat 4B", description: "Lunch", amount: 300, request_id: requestId });
+    const sameId = (await api.call<Expense[]>(asha, "GET", `/spaces/${space.id}/expenses`)).body;
+    expect(sameId.map((e) => e.description).sort()).toEqual(["Dinner", "Lunch"]);
+
     const byGroup = await tool(client, "add_expense", { space: "Flat 4B", description: "Beer", amount: 600, paid_by: "chen", split_between: ["Boys"], date: "yesterday" });
     expect(byGroup.isError).toBe(false);
 
@@ -148,7 +153,7 @@ describe("MCP server", () => {
     expect(percent.text).toContain("split by percent");
 
     const expenses = (await api.call<Expense[]>(asha, "GET", `/spaces/${space.id}/expenses`)).body;
-    expect(expenses).toHaveLength(3);
+    expect(expenses).toHaveLength(4);
     const beer = expenses.find((e) => e.description === "Beer")!;
     expect(beer.payerId).toBe(chenId);
     expect(beer.shares.map((s) => s.userId).sort()).toEqual([balaId, chenId].sort());

@@ -4,7 +4,7 @@
 //
 //   MCP_URL=http://localhost:5173/mcp/et_… node scripts/mcp-prompt-check.mjs
 //
-// Needs Claude Code on PATH (or CLAUDE_BIN) and signed in. The space names assume the test
+// ONLY=6,8,11 runs a subset. Needs Claude Code on PATH (or CLAUDE_BIN) and signed in. The space names assume the test
 // data from docs/MCP_TEST_PROMPTS.md ("MCP Test Flat" with Asha Rao, Bala Iyer, Chen Li and a
 // "Boys" group). Each prompt runs as a fresh conversation. Uses your Claude plan's usage.
 import { spawn } from "node:child_process";
@@ -69,8 +69,13 @@ function run(prompt) {
   });
 }
 
+// ONLY=6,8,11 runs just those prompts (numbered from 1).
+const only = process.env.ONLY ? new Set(process.env.ONLY.split(",").map(Number)) : null;
 let failed = 0;
+let ran = 0;
 for (const [i, [prompt, must, mustNot, expectError]] of CASES.entries()) {
+  if (only && !only.has(i + 1)) continue;
+  ran++;
   const r = await run(prompt);
   const called = r.calls.map((c) => c.name);
   const problems = [];
@@ -87,5 +92,5 @@ for (const [i, [prompt, must, mustNot, expectError]] of CASES.entries()) {
   console.log(`   ${r.answer.replace(/\n+/g, " ⏎ ").slice(0, 500)}`);
   for (const p of problems) console.log(`   ✗ ${p}`);
 }
-console.log(`\n${CASES.length - failed}/${CASES.length} prompts passed`);
+console.log(`\n${ran - failed}/${ran} prompts passed`);
 process.exit(failed ? 1 : 0);
