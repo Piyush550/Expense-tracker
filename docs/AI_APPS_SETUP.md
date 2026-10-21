@@ -83,5 +83,5 @@ Go to **iPhone & AI apps** in the app and click **Revoke** on that app's key. Th
 - **Endpoint**: `POST /mcp` (key in `Authorization: Bearer et_…`) or `POST /mcp/et_…`. It uses Streamable HTTP, stateless, with JSON replies; `GET` and `DELETE` answer 405.
 - **Code**: `server/mcp.ts`; the Netlify function is `netlify/functions/mcp.ts`. Tools call the API in-process with the key, so key scope and validation are the API's own.
 - **Local**: run `npm run dev:local` to serve `/mcp` on `http://localhost:5173` as well. Test with `npx @modelcontextprotocol/inspector`, transport Streamable HTTP.
-- **Tests**: `tests/mcp.test.ts`.
+- **Tests**: `tests/mcp.test.ts`. To test with real Claude, use the prompts and runner in [MCP_TEST_PROMPTS.md](MCP_TEST_PROMPTS.md).
 - **Design and next steps (OAuth)**: [MCP_SERVER_PLAN.md](MCP_SERVER_PLAN.md).
