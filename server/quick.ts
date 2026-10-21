@@ -55,6 +55,13 @@ export async function quickPresets(q: Queryable, me: Me): Promise<QuickPreset[]>
 
 export function findPreset(presets: QuickPreset[], wanted: string): QuickPreset {
   const w = wanted.trim();
+  if (!w) {
+    throw new HttpError(
+      422,
+      "no_preset",
+      "No space was picked. In the shortcut, check the step before \"Which space?\": Get Dictionary Value must use the key labels from the first Get Contents of URL.",
+    );
+  }
   const found = presets.find((p) => p.id === w) ?? presets.find((p) => p.label.toLowerCase() === w.toLowerCase());
   if (!found) throw new HttpError(422, "unknown_preset", "That choice is not available any more. Run the shortcut again.");
   return found;

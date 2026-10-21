@@ -120,10 +120,14 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   });
 
   // ── Phone shortcut: presets and quick equal-split add ─────────────────────────────────
-  app.get("/quick/options", async (c) => {
+  // GET or POST: a GET that carries a body (an easy Shortcuts slip) crashes in Netlify's
+  // runtime before reaching this code, while a POST with or without a body always works.
+  const quickOptions = async (c: Ctx) => {
     const presets = await quickPresets(c.var.db, c.var.user);
     return c.json<QuickOptions>({ labels: presets.map((p) => p.label), presets });
-  });
+  };
+  app.get("/quick/options", quickOptions);
+  app.post("/quick/options", quickOptions);
 
   // "Who shared it?": the names to tick for the chosen preset's space, as a plain JSON list so
   // the shortcut can pass the reply straight to Choose from List. POST so the preset label

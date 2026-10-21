@@ -100,7 +100,9 @@ export const updateToken = z
   .refine((v) => v.name !== undefined || v.lifetimeDays !== undefined, "Nothing to update.");
 
 export const quickExpense = z.strictObject({
-  preset: z.string().trim().min(1).max(200),
+  // May arrive empty when the shortcut's list step got nothing; the route answers that with
+  // a message pointing at the step to fix, rather than a bare validation error.
+  preset: z.string().trim().max(200).default(""),
   amount: z.union([z.number(), z.string().trim().max(20)]),
   title: z.string().trim().max(100).optional(),
   date: z.string().trim().max(40).optional(),
@@ -109,4 +111,4 @@ export const quickExpense = z.strictObject({
   people: z.union([z.array(z.string().trim().max(80)).max(100), z.string().max(4000)]).optional(),
 });
 
-export const quickPeople = z.strictObject({ preset: z.string().trim().min(1).max(200) });
+export const quickPeople = z.strictObject({ preset: z.string().trim().max(200).default("") });

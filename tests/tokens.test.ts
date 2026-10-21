@@ -231,3 +231,17 @@ describe("phone shortcut: pick who shared it", () => {
     expect(badPreset.body.message).toMatch(/^Couldn't load the people: /);
   });
 });
+
+describe("phone shortcut: forgiving input", () => {
+  it("loads choices by POST too, and explains an empty choice", async () => {
+    await flat();
+    const { token } = await makeToken();
+    const viaPost = await api.call<QuickOptions>(token, "POST", "/quick/options", {});
+    expect(viaPost.body.labels).toEqual(["Flat 4B · Everyone"]);
+    expect((await api.call<QuickOptions>(token, "POST", "/quick/options")).status).toBe(200);
+    const empty = await api.call<{ message: string; error: { code: string } }>(token, "POST", "/quick/expense", { preset: "", amount: 10 });
+    expect(empty.status).toBe(422);
+    expect(empty.body.error.code).toBe("no_preset");
+    expect(empty.body.message).toMatch(/^Couldn't add the expense: No space was picked\. In the shortcut, check the step before "Which space\?"/);
+  });
+});
