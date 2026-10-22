@@ -63,7 +63,7 @@ describe("MCP server", () => {
       const client = await connect(key, via);
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name).sort()).toEqual(
-        ["add_expense", "add_expenses", "edit_expense", "get_balances", "get_space", "list_expenses", "list_payments", "list_spaces", "record_payment"].sort(),
+        ["add_expense", "add_expenses", "create_space", "edit_expense", "get_balances", "get_space", "list_expenses", "list_payments", "list_people", "list_spaces", "record_payment"].sort(),
       );
       expect(tools.find((t) => t.name === "list_spaces")?.annotations?.readOnlyHint).toBe(true);
       await client.close();

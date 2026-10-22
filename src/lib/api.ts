@@ -1,7 +1,7 @@
 // Typed calls to /api. Every request carries the Firebase ID token; a 401 retries once
 // with a freshly minted token (e.g. right after the email was verified).
 import type {
-  ApiErrorBody, Balances, Expense, ExpenseInput, Group, Me, MonthSummary, Person, PeopleInput, Role, Settlement, SettlementInput, SpaceDetail,
+  DirectoryPage, ApiErrorBody, Balances, Expense, ExpenseInput, Group, Me, MonthSummary, Person, PeopleInput, Role, Settlement, SettlementInput, SpaceDetail,
   SpaceKind, SpaceSummary, InitialSpaceGroup, SpaceQuickActions, ApiToken, NewApiToken,
 } from "../../shared/api";
 import { auth } from "./firebase";
@@ -64,6 +64,8 @@ export const api = {
   space: (id: string) => request<SpaceDetail>("GET", `/spaces/${id}`),
   people: () => request<Person[]>("GET", "/people"),
   directory: () => request<Person[]>("GET", "/people/directory"),
+  directoryPage: (search: string, limit: number, offset: number) =>
+    request<DirectoryPage>("GET", `/people/directory/page?${new URLSearchParams({ search, limit: String(limit), offset: String(offset) })}`),
 
   createSpace: (input: { name: string; kind: SpaceKind; initialGroups?: InitialSpaceGroup[]; quickGroupIds?: string[]; memberEmails?: string[] } & PeopleInput) =>
     request<SpaceDetail>("POST", "/spaces", input),

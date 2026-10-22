@@ -10,7 +10,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { Balances, Expense, ExpensePage, Group, Me, Member, Settlement, SettlementPage, SpaceDetail, SpaceSummary } from "../shared/api";
+import type { DirectoryPage, DirectoryPerson, Balances, Expense, ExpensePage, Group, Me, Member, Settlement, SettlementPage, SpaceDetail, SpaceSummary } from "../shared/api";
 import { MONTH_RE, monthLabel, shiftMonth } from "../shared/dates";
 import { formatMoney, MAX_AMOUNT_PAISE } from "../shared/money";
 import { PERCENT_TOTAL, type SplitType } from "../shared/split";
@@ -19,14 +19,15 @@ import { TOKEN_PREFIX } from "./tokens";
 
 type FetchApi = (req: Request) => Response | Promise<Response>;
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const INSTRUCTIONS = `Expense Tracker: shared expenses in "spaces" (a flat, a trip), split between people.
 Amounts are in rupees (₹). People and spaces are named by name; "me" means the signed-in user.
-Start with list_spaces. Before adding, check names with get_space if unsure.
+Start with list_spaces. Before adding expenses, check names with get_space if unsure.
 Defaults when the user doesn't say: they paid, it is split equally between everyone in the space, dated today. Use them and mention them in your reply; don't ask about them.
 split_between is exactly who shares the cost. "Split with Chen" or "split with Boys" means only Chen or only the Boys group: don't add the payer or the user unless they say "me", "us" or "between me and …".
 Ask only when the amount or what it was for is missing, or a name doesn't match. Never guess an amount. Amounts have at most 2 decimals (paise); if the user gives more, ask instead of rounding.
 To edit, read the expense first and send the version you saw. Payments are listed with list_payments.
+To find registered platform users use list_people (names and app IDs, never emails). To create a space use create_space: the caller is automatically its owner. Resolve members from list_people, clarify ambiguous names, and never create placeholder people or guess an email. Omitted kind means recurring (monthly); use one_time for a trip or event. Use a fresh request_id for each intended space creation and preserve it when retrying the same request. Groups and shortcuts can be configured in the app after creation.
 This connector cannot delete anything; for that, use the app.`;
 
 /** A readable failure; becomes the tool's error text. */
@@ -79,7 +80,7 @@ function pickByName<T>(items: T[], wanted: string, name: (t: T) => string, what:
 
 async function findSpace(api: Api, wanted: string): Promise<SpaceSummary> {
   const spaces = await api.call<SpaceSummary[]>("GET", "/spaces");
-  if (!spaces.length) throw new ToolError("You aren't in any space yet. Create one in the app first.");
+  if (!spaces.length) throw new ToolError("You aren't in any space yet. Use create_space or create one in the app first.");
   return spaces.find((s) => s.id === wanted.trim()) ?? pickByName(spaces, wanted, (s) => s.name, "space", "your spaces");
 }
 
@@ -186,6 +187,22 @@ function findPeople(space: Space, wanted: string[] | undefined): Member[] {
     add([findMember(space, raw)]);
   }
   return [...out.values()];
+}
+
+/** Resolve a registered platform member without exposing email or scanning an unbounded directory. */
+async function findRegisteredPerson(api: Api, me: Me, wanted: string): Promise<DirectoryPerson> {
+  if (ME_WORDS.has(norm(wanted)) || wanted.trim() === me.id) return { id: me.id, name: me.name };
+  const params = new URLSearchParams({ search: wanted.trim(), limit: "200" });
+  const page = await api.call<DirectoryPage>("GET", `/people/directory/page?${params}`);
+  if (page.total > page.people.length) throw new ToolError(`Too many people match "${wanted}". Use a full name or an app ID from list_people.`);
+  const byId = page.people.find((p) => p.id === wanted.trim());
+  if (byId) return byId;
+  try {
+    return pickByName(page.people, wanted, (p) => p.name, "registered person", "the platform");
+  } catch (err) {
+    if (err instanceof ToolError) throw new ToolError(`${err.message} Use list_people to find the full name or app ID; only registered users can be added here.`);
+    throw err;
+  }
 }
 
 // ── Money, dates, months ──────────────────────────────────────────────────────────────────
@@ -387,6 +404,52 @@ function rowId(requestId: string | undefined, content: unknown): string {
 
 function buildServer(api: Api, me: Me): McpServer {
   const server = new McpServer({ name: "expense-tracker", title: "Expense Tracker", version: VERSION }, { instructions: INSTRUCTIONS });
+
+  server.registerTool(
+    "list_people",
+    {
+      title: "Find people on the platform",
+      description: "Browse or search all registered Expense Tracker users, including yourself. Returns only display names and app IDs, never email addresses. Use these IDs or unique names as members when creating a space. Results are paginated; totals cover all matches.",
+      inputSchema: {
+        search: z.string().trim().max(100).optional().describe("Literal name search, or a complete app user ID."),
+        limit: z.number().int().min(1).max(200).optional().describe("People per page (default 20, maximum 200)."),
+        offset: z.number().int().min(0).optional().describe("Matches to skip (default 0)."),
+      },
+      annotations: READ,
+    },
+    ({ search, limit, offset }) => run(async () => {
+      const params = new URLSearchParams({ limit: String(limit ?? 20), offset: String(offset ?? 0) });
+      if (search) params.set("search", search);
+      const page = await api.call<DirectoryPage>("GET", `/people/directory/page?${params}`);
+      const scope = search ? ` matching "${search}"` : "";
+      const head = `${page.total} registered ${page.total === 1 ? "person" : "people"}${scope}.`;
+      if (!page.people.length) return `${head} No people on this page${page.offset ? "; try an earlier offset" : ""}.`;
+      const end = page.offset + page.people.length;
+      return `${head} Showing ${page.offset + 1}–${end} of ${page.total}${end < page.total ? `; use offset ${end} for more` : ""}.\n${page.people.map((p) => `- ${p.name}${p.id === me.id ? " (you)" : ""} · id ${p.id}`).join("\n")}`;
+    }),
+  );
+
+  server.registerTool(
+    "create_space",
+    {
+      title: "Create a space",
+      description: "Create a monthly or one-time expense space with existing registered platform users. The signed-in user is always included as owner. Use list_people to find member names or IDs first; unknown or ambiguous members are refused before anything is created. Does not create people, send invitation emails, or configure groups. Preserve request_id and the same details on retries to avoid duplicate spaces.",
+      inputSchema: {
+        name: z.string().trim().min(1).max(60).describe("The new space's name."),
+        kind: z.enum(["recurring", "one_time"]).optional().describe("recurring: settled month by month (default); one_time: a trip or event settled once."),
+        members: z.array(z.string().trim().min(1).max(100)).max(50).optional().describe("Registered people's unique names or app IDs from list_people. You are included automatically. Omit to start a space by yourself."),
+        request_id: requestIdArg,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    ({ name, kind, members, request_id }) => run(async () => {
+      const resolved = await Promise.all((members ?? []).map((person) => findRegisteredPerson(api, me, person)));
+      const directoryIds = [...new Set(resolved.map((p) => p.id).filter((id) => id !== me.id))].sort();
+      const fields = { name, kind: kind ?? "recurring", directoryIds };
+      const space = await api.call<SpaceDetail>("POST", "/spaces", { id: rowId(request_id, fields), ...fields });
+      return `Space ready: ${space.name} (${space.kind === "recurring" ? "monthly" : "one-time"}) · id ${space.id}\nOwner: ${me.name} (you).\nMembers: ${space.members.filter((m) => m.active).map((m) => m.id === me.id ? `${m.name} (you)` : m.name).join(", ")}\nYou can now add expenses using this space ID. Groups and shortcuts can be set up in the app.`;
+    }),
+  );
 
   server.registerTool(
     "list_spaces",

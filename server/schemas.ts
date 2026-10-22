@@ -27,6 +27,7 @@ export const quickActions = z.discriminatedUnion("mode", [
 ]);
 
 export const createSpace = z.strictObject({
+  id: id.optional(), // Optional client id makes MCP retries safe; existing app clients may omit it.
   name: trimmed(1, 60),
   kind: kind.default("recurring"),
   memberEmails: emails,
@@ -89,6 +90,11 @@ export const createSettlement = z
   .refine((v) => v.fromUserId !== v.toUserId, "Someone cannot pay themselves.");
 
 export const listQuery = z.object({ month: month.optional() });
+export const directoryPageQuery = z.object({
+  search: z.string().trim().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
 
 const pageFields = {
   month: month.optional(),

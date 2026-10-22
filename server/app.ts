@@ -13,7 +13,7 @@ import { createSpaceGroup, findSpaceGroup, listSpaceGroups, loadQuickActions, sa
 import { addEmailToSpace, addToSpace, ensureSpaceKeepsOwner, listSpaces, loadSpace } from "./spaces";
 import { type Ctx, type Env, parse, readBody } from "./http";
 import { memberNet, monthlySummary, spaceBalances } from "./ledger";
-import { listContacts, registeredDirectory, requireContacts, requireRegistered } from "./people";
+import { listContacts, pageRegisteredDirectory, registeredDirectory, requireContacts, requireRegistered } from "./people";
 import * as s from "./schemas";
 import type { CreateExpense } from "./schemas";
 import { mergeUsers, resolveUser } from "./users";
@@ -176,6 +176,7 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   // People you already share a space or group with: the "add someone" dropdowns.
   app.get("/people", async (c) => c.json<Person[]>(await listContacts(c.var.db, c.var.user.id)));
   app.get("/people/directory", async (c) => c.json<Person[]>(await registeredDirectory(c.var.db, c.var.user.id)));
+  app.get("/people/directory/page", async (c) => c.json(await pageRegisteredDirectory(c.var.db, parse(s.directoryPageQuery, c.req.query()))));
 
   // ── Spaces ────────────────────────────────────────────────────────────────────────────
   app.get("/spaces", async (c) => c.json(await listSpaces(c.var.db, c.var.user.id)));
@@ -184,12 +185,18 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   app.post("/spaces", async (c) => {
     const body = await readBody(c, s.createSpace);
     const me = c.var.user;
-    const detail = await c.var.db.transaction(async (tx) => {
+    const result = await c.var.db.transaction(async (tx) => {
+      const spaceId = body.id ?? randomUUID();
       const { rows } = await tx.query<{ id: string }>(
-        "INSERT INTO spaces (name, kind, created_by) VALUES ($1, $2, $3) RETURNING id",
-        [body.name, body.kind, me.id],
+        "INSERT INTO spaces (id, name, kind, created_by) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING RETURNING id",
+        [spaceId, body.name, body.kind, me.id],
       );
-      const spaceId = rows[0]!.id;
+      if (!rows.length) {
+        const existing = await tx.query<{ created_by: string }>("SELECT created_by FROM spaces WHERE id = $1", [spaceId]);
+        if (existing.rows[0]?.created_by !== me.id) throw conflict("id_taken", "That space id is already used.");
+        const { role } = await requireMember(tx, spaceId, me.id);
+        return { detail: await loadSpace(tx, spaceId, role), created: false };
+      }
       await tx.query("INSERT INTO space_members (space_id, user_id, role) VALUES ($1, $2, 'owner')", [spaceId, me.id]);
       await requireContacts(tx, me.id, body.memberIds);
       await requireRegistered(tx, body.directoryIds);
@@ -199,9 +206,9 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
       for (const invite of body.memberInvites) await addEmailToSpace(tx, spaceId, invite.email, invite.name);
       for (const group of body.initialGroups) await createSpaceGroup(tx, spaceId, me.id, group);
       if (body.quickGroupIds.length) await saveQuickActions(tx, spaceId, { mode: "custom", groupIds: body.quickGroupIds });
-      return loadSpace(tx, spaceId, "owner");
+      return { detail: await loadSpace(tx, spaceId, "owner"), created: true };
     });
-    return c.json<SpaceDetail>(detail, 201);
+    return c.json<SpaceDetail>(result.detail, result.created ? 201 : 200);
   });
 
   app.get("/spaces/:id", async (c) => {

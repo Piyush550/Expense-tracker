@@ -92,6 +92,18 @@ Each row also retains its selected group names and membership snapshots in its l
 Copying a split copies those snapshots independently; changing one row or editing a saved
 group does not silently change another draft row's participants.
 
+## In-app Docs
+
+Open **Docs** under Discover in the signed-in sidebar (on phones, open **Menu** first).
+The page at `?v=docs` is one continuous, scrollable guide: a welcome section, a three-step
+workflow, a sticky topic bar, and eight fully expanded sections. It covers space setup,
+expenses and split methods, groups and quick actions, balances and repayments, people and
+membership, iPhone/AI integrations, settings, and common terms. Topic links jump within the
+page, such as `?v=docs#docs-expenses`; they never replace the content with another screen.
+Old `?v=docs&doc=expenses` links still scroll to the matching section. People and integration
+sections retain links to the relevant app pages. Technical setup and API documentation
+remain in this README and `docs/`.
+
 ## Space groups, onboarding and Quick actions
 
 New spaces use three steps: **Details & people → Groups → Quick actions**. Groups and
@@ -331,7 +343,8 @@ Errors look like `{ "error": { "code", "message" } }`.
 | GET / PATCH | `/me` | your profile (`name`) |
 | GET | `/people` | existing contacts (shared spaces) |
 | GET | `/people/directory` | all registered app users except yourself; names and UUIDs, email redacted |
-| GET / POST | `/spaces` | your spaces / create (`name`, `kind`, `memberIds`, `directoryIds`, `memberInvites`, optional `initialGroups` and `quickGroupIds`; `memberEmails` also supported) |
+| GET | `/people/directory/page` | paginated registered users including yourself; `search`, `limit` (1–200), `offset`; names and app IDs only |
+| GET / POST | `/spaces` | your spaces / create (optional retry-safe client `id`, `name`, `kind`, `memberIds`, `directoryIds`, `memberInvites`, optional `initialGroups` and `quickGroupIds`; `memberEmails` also supported) |
 | GET / PATCH / DELETE | `/spaces/:id` | details, members and active months / owner: `name`, `kind`, `simplifyDebts` / owner: delete (all settled) |
 | POST | `/spaces/:id/members` | owner: batch `{ memberIds, directoryIds, memberInvites }`, or `{ userId }`, `{ email }` |
 | PATCH / DELETE | `/spaces/:id/members/:userId` | owner: set `role` / leave yourself, or owner removes (balance must be 0) |
@@ -403,7 +416,7 @@ personal key, sent as `Authorization: Bearer et_…` or as the last part of the 
 - Code: `server/mcp.ts` (tools), `netlify/functions/mcp.ts` (function at `/mcp` and `/mcp/*`).
   Tools call the API in-process with the key, so they have exactly a key's scope: no deleting,
   merging or key management.
-- Tools: `list_spaces`, `get_space`, `list_expenses` (month, payer, person and text filters;
+- Tools: `list_people` (paginated registered names/app IDs), `create_space` (monthly or one-time, registered members, caller as owner), `list_spaces`, `get_space`, `list_expenses` (month, payer, person and text filters;
   paging; exact counts from the database), `list_payments`, `get_balances`, `add_expense`,
   `add_expenses`, `edit_expense` (needs the version read), `record_payment`. They take names
   ("me", people, groups; `group:`/`person:` when a name is both), rupees to the paisa (more
@@ -411,6 +424,8 @@ personal key, sent as `Authorization: Bearer et_…` or as the last part of the 
 - `npm run dev:local` serves `/mcp` too. Try it with `npx @modelcontextprotocol/inspector`.
 - Setup for users: [docs/AI_APPS_SETUP.md](docs/AI_APPS_SETUP.md). Design and the OAuth next
   step: [docs/MCP_SERVER_PLAN.md](docs/MCP_SERVER_PLAN.md).
+
+The **People** sidebar section lets signed-in users browse and search the name-only platform directory, select people across pages, and continue new-space onboarding with them selected. The UI and MCP use the same paginated API. Space creation through MCP accepts names or directory IDs and an optional request ID for safe retries; it does not invite new people by email. See [platform people and MCP space creation](docs/PLATFORM_PEOPLE_MCP.md) for examples and verification scenarios.
 
 ## Changing the database
 

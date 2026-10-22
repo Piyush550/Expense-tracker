@@ -49,6 +49,10 @@ export const useSpaces = () => useQuery({ queryKey: keys.spaces, queryFn: api.sp
 export const useGroups = (id: string | null) => useQuery({ queryKey: keys.groups(id ?? ""), queryFn: () => api.groups(id!), enabled: !!id });
 export const useQuickActions = (id: string) => useQuery({ queryKey: keys.quickActions(id), queryFn: () => api.quickActions(id) });
 export const usePeople = () => useQuery({ queryKey: keys.people, queryFn: api.people });
+export const useDirectoryPage = (search: string, limit: number, offset: number) => useQuery({
+  queryKey: [...keys.people, "directory-page", search, limit, offset],
+  queryFn: () => api.directoryPage(search, limit, offset),
+});
 export const useDirectory = () => useQuery({ queryKey: [...keys.people, "directory"], queryFn: api.directory });
 export function useSelectablePeople() {
   const contacts = usePeople();

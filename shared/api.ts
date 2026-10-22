@@ -51,6 +51,15 @@ export interface Person {
   registered: boolean;
 }
 
+/** Public registered-user directory: no email addresses or authentication identifiers. */
+export type DirectoryPerson = Pick<Person, "id" | "name">;
+export interface DirectoryPage {
+  people: DirectoryPerson[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface PersonInvite {
   name: string;
   email: string;

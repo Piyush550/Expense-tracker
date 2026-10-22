@@ -7,13 +7,13 @@ import { peopleInput } from "../lib/people";
 import { PeoplePicker } from "./PeoplePicker";
 import { PeopleSelect } from "./PeopleSelect";
 
-export function NewSpaceForm({ me, onDone, onCancel }: { me: Me; onDone(space: SpaceDetail): void; onCancel?: () => void }) {
+export function NewSpaceForm({ me, onDone, onCancel, initialMemberIds = [] }: { me: Me; onDone(space: SpaceDetail): void; onCancel?: () => void; initialMemberIds?: string[] }) {
   const toast = useToast();
   const people = useSelectablePeople();
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<SpaceKind>("recurring");
-  const [ids, setIds] = useState<string[]>([]);
+  const [ids, setIds] = useState<string[]>(initialMemberIds);
   const [invites, setInvites] = useState<PersonInvite[]>([]);
   const [groups, setGroups] = useState<InitialSpaceGroup[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);

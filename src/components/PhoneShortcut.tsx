@@ -76,21 +76,21 @@ export function PhoneShortcut() {
       {fresh && (
         <div className="draftbanner" role="status" style={{ flexDirection: "column", alignItems: "stretch", marginBottom: 16 }}>
           <strong>Copy this key now. It won't be shown again.</strong>
-          <div className="inline">
+          <div className="inline key-copy-row">
             <div className="field" style={{ minWidth: 0 }}>
               <label htmlFor="new-key">Key for "{fresh.info.name}"</label>
               <input id="new-key" type="text" readOnly value={fresh.token} className="mono" onFocus={(e) => e.currentTarget.select()} />
             </div>
             <button type="button" className="btn primary" onClick={() => copy(fresh.token, "Key")}>Copy key</button>
           </div>
-          <div className="inline">
+          <div className="inline key-copy-row">
             <div className="field" style={{ minWidth: 0 }}>
               <label htmlFor="site-url">Your site address (the shortcut needs this too)</label>
               <input id="site-url" type="text" readOnly value={origin} className="mono" onFocus={(e) => e.currentTarget.select()} />
             </div>
             <button type="button" className="btn" onClick={() => copy(origin, "Address")}>Copy address</button>
           </div>
-          <div className="inline">
+          <div className="inline key-copy-row">
             <div className="field" style={{ minWidth: 0 }}>
               <label htmlFor="mcp-url">Connector address for Claude or ChatGPT (holds the key, keep it private)</label>
               <input id="mcp-url" type="text" readOnly value={connector(fresh.token)} className="mono" onFocus={(e) => e.currentTarget.select()} />
@@ -101,12 +101,12 @@ export function PhoneShortcut() {
         </div>
       )}
 
-      <form className="inline" onSubmit={submit} noValidate>
+      <form className="inline key-create-form" onSubmit={submit} noValidate>
         <div className="field">
           <label htmlFor="key-name">New key name</label>
           <input id="key-name" type="text" maxLength={40} value={name} onChange={(e) => setName(e.target.value)} placeholder="iPhone" />
         </div>
-        <div className="field" style={{ flex: "0 1 180px" }}>
+        <div className="field">
           <label htmlFor="key-life">Expires</label>
           <select id="key-life" value={lifetime} onChange={(e) => setLifetime(e.target.value)}>
             {LIFETIMES.map((l) => <option key={l.label} value={l.days ?? "never"}>{l.label}</option>)}
@@ -125,17 +125,17 @@ export function PhoneShortcut() {
         ) : (
           <ul className="memberlist" style={{ border: "1px solid var(--line)", borderRadius: "var(--radius)" }}>
             {tokens.data.map((t: ApiToken) => (
-              <li key={t.id} className={`memberrow${t.status === "active" ? "" : " left"}`}>
-                <span className="grow">
+              <li key={t.id} className={`memberrow token-row${t.status === "active" ? "" : " left"}`}>
+                <div className="grow">
                   {renaming?.id === t.id ? (
-                    <form className="inline" onSubmit={(e) => { e.preventDefault(); if (renaming.name.trim()) update.mutate({ id: t.id, patch: { name: renaming.name.trim() } }); }}>
+                    <form className="inline token-rename-form" onSubmit={(e) => { e.preventDefault(); if (renaming.name.trim()) update.mutate({ id: t.id, patch: { name: renaming.name.trim() } }); }}>
                       <div className="field"><label htmlFor={`rn-${t.id}`} className="sr-only">Key name</label>
                         <input id={`rn-${t.id}`} type="text" maxLength={40} value={renaming.name} onChange={(e) => setRenaming({ id: t.id, name: e.target.value })} autoFocus /></div>
                       <button type="submit" className="btn small primary">Save</button>
                       <button type="button" className="btn small" onClick={() => setRenaming(null)}>Cancel</button>
                     </form>
                   ) : (
-                    <span>
+                    <span className="token-title">
                       <strong>{t.name}</strong>
                       <span className="tag mono">…{t.hint}</span>
                       <span className={`tag${t.status === "active" ? " accent" : ""}`}>{t.status}</span>
@@ -144,7 +144,8 @@ export function PhoneShortcut() {
                   <span className="muted" style={{ fontSize: 13 }}>
                     Created {when(t.createdAt)} · last used {t.lastUsedAt ? when(t.lastUsedAt) : "never"} · {t.status === "revoked" ? `revoked ${when(t.revokedAt)}` : t.expiresAt ? `expires ${when(t.expiresAt)}` : "never expires"}
                   </span>
-                </span>
+                </div>
+                <div className="token-actions" role="group" aria-label={`Actions for ${t.name}`}>
                 {t.status !== "revoked" && renaming?.id !== t.id && (
                   <>
                     <button type="button" className="btn small" onClick={() => setRenaming({ id: t.id, name: t.name })}>Rename</button>
@@ -163,6 +164,7 @@ export function PhoneShortcut() {
                 {t.status !== "active" && (
                   <ConfirmButton confirmLabel="Confirm delete" disabled={remove.isPending} onConfirm={() => remove.mutate(t.id)}>Delete</ConfirmButton>
                 )}
+                </div>
               </li>
             ))}
           </ul>

@@ -48,6 +48,8 @@ Developer mode is a ChatGPT beta and depends on your plan. Some plans allow only
 
 | Tool | Ask things like |
 |---|---|
+| `list_people` | "Who is registered on the platform?" "Find Bala." (paginated names and app IDs; no emails) |
+| `create_space` | "Create a one-time space called Goa weekend with Bala and Chen." (you become owner; registered users only) |
 | `list_spaces` | "Which spaces am I in and where do I stand?" |
 | `get_space` | "Who's in Flat 4B? What groups are there?" |
 | `list_expenses` | "Show October's expenses in Flat 4B." "Which expenses involve Bala?" "Find the electricity bills." (filters: month, who paid, who has a share, text; pages past 50) |
@@ -88,3 +90,5 @@ Go to **iPhone & AI apps** in the app and click **Revoke** on that app's key. Th
 - **Local**: run `npm run dev:local` to serve `/mcp` on `http://localhost:5173` as well. Test with `npx @modelcontextprotocol/inspector`, transport Streamable HTTP.
 - **Tests**: `tests/mcp.test.ts`. To test with real Claude, use the prompts and runner in [MCP_TEST_PROMPTS.md](MCP_TEST_PROMPTS.md).
 - **Design and next steps (OAuth)**: [MCP_SERVER_PLAN.md](MCP_SERVER_PLAN.md).
+
+For the People page, new-space creation, retry behavior and extra test scenarios, see [Platform people and MCP space creation](PLATFORM_PEOPLE_MCP.md). Refresh your connector after deployment to discover all 11 tools.

@@ -1,6 +1,6 @@
 // People: existing contacts, a name-only registered directory, and named email invitations.
-import type { Person } from "../shared/api";
-import type { Queryable } from "./db";
+import type { DirectoryPage, Person } from "../shared/api";
+import { num, type Queryable } from "./db";
 import { notFound } from "./errors";
 
 export async function userIdForEmail(tx: Queryable, email: string, name?: string): Promise<string> {
@@ -58,4 +58,15 @@ export async function requireRegistered(q: Queryable, ids: string[]) {
   if (!unique.length) return;
   const { rows } = await q.query("SELECT id FROM users WHERE auth_uid IS NOT NULL AND id = ANY($1::uuid[])", [unique]);
   if (rows.length !== unique.length) throw notFound("That registered person");
+}
+
+/** One name-only page of every registered user, including the caller. Search is literal, not LIKE syntax. */
+export async function pageRegisteredDirectory(q: Queryable, input: { search?: string; limit: number; offset: number }): Promise<DirectoryPage> {
+  const search = input.search?.trim() ?? "";
+  const where = "auth_uid IS NOT NULL AND ($1 = '' OR strpos(lower(name), lower($1)) > 0 OR id::text = $1)";
+  const [count, page] = await Promise.all([
+    q.query<{ total: unknown }>(`SELECT COUNT(*) AS total FROM users WHERE ${where}`, [search]),
+    q.query<{ id: string; name: string }>(`SELECT id, name FROM users WHERE ${where} ORDER BY lower(name), id LIMIT $2 OFFSET $3`, [search, input.limit, input.offset]),
+  ]);
+  return { people: page.rows, total: num(count.rows[0]?.total), limit: input.limit, offset: input.offset };
 }
