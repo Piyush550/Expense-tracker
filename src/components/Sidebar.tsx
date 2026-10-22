@@ -4,14 +4,16 @@ import { formatMoney } from "../../shared/money";
 import { AccountMenu, type SettingsTab } from "./AccountMenu";
 import { Brand } from "./Header";
 
-export function Sidebar({ me, spaces, selected, view, onSpace, onNewSpace, onAccount }: {
+export function Sidebar({ me, spaces, selected, view, onSpace, onNewSpace, onAccount, onPeople, onDocs }: {
   me: Me | undefined;
   spaces: SpaceSummary[];
   selected: string | null;
-  /** What the main area shows: a space, the account page or the new-space form. */
-  view: "space" | "account" | "new";
+  /** What the main area shows: a space, a platform page, or the new-space form. */
+  view: "space" | "account" | "new" | "people" | "docs";
   onSpace(id: string): void;
   onNewSpace(): void;
+  onPeople(): void;
+  onDocs(): void;
   /** Opens Settings at a tab. */
   onAccount(tab: SettingsTab): void;
 }) {
@@ -48,6 +50,14 @@ export function Sidebar({ me, spaces, selected, view, onSpace, onNewSpace, onAcc
       </nav>
 
       <div id="side-more" className="sidemore">
+      <nav className="sidenav" aria-label="Platform"><div className="sidelabel">Discover</div>
+        <button type="button" className={`sidelink${view === "people" ? " on" : ""}`} aria-current={view === "people" ? "page" : undefined} onClick={go(onPeople)}>
+          <span className="stack"><strong>People</strong><span>Find people on the platform</span></span>
+        </button>
+        <button type="button" className={`sidelink${view === "docs" ? " on" : ""}`} aria-current={view === "docs" ? "page" : undefined} onClick={go(onDocs)}>
+          <span className="stack"><strong>Docs</strong><span>Guides for using Expense Tracker</span></span>
+        </button>
+      </nav>
       <div className="sidefoot">
         {me && <AccountMenu me={me} active={view === "account"} onOpen={(tab) => { setMenu(false); onAccount(tab); }} />}
       </div>

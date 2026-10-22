@@ -3,21 +3,21 @@
 // membership before touching data.
 import { Hono, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import type { ApiToken, Balances, Expense, Me, MonthSummary, NewApiToken, Person, QuickExpenseResult, QuickOptions, Settlement, SpaceDetail } from "../shared/api";
+import type { ApiToken, Balances, Expense, ExpensePage, Me, MonthSummary, NewApiToken, Person, QuickExpenseResult, QuickOptions, Settlement, SettlementPage, SpaceDetail } from "../shared/api";
 import { activeMemberIds, assertUuid, requireMember, requireOwner } from "./access";
 import type { VerifyToken } from "./auth";
 import { pgCode, type Db, type Queryable } from "./db";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "./errors";
-import { findExpense, getSettlement, listExpenses, listSettlements, replaceShares, sharesFor } from "./expenses";
+import { findExpense, getSettlement, listExpenses, listSettlements, pageExpenses, pageSettlements, replaceShares, sharesFor } from "./expenses";
 import { createSpaceGroup, findSpaceGroup, listSpaceGroups, loadQuickActions, saveQuickActions, setSpaceGroupMembers } from "./groups";
 import { addEmailToSpace, addToSpace, ensureSpaceKeepsOwner, listSpaces, loadSpace } from "./spaces";
 import { type Ctx, type Env, parse, readBody } from "./http";
 import { memberNet, monthlySummary, spaceBalances } from "./ledger";
-import { listContacts, registeredDirectory, requireContacts, requireRegistered } from "./people";
+import { listContacts, pageRegisteredDirectory, registeredDirectory, requireContacts, requireRegistered } from "./people";
 import * as s from "./schemas";
 import type { CreateExpense } from "./schemas";
 import { mergeUsers, resolveUser } from "./users";
-import { findPreset, quickAmount, quickDate, quickMessage, quickPresets } from "./quick";
+import { findPreset, peopleChoices, pickedPeople, quickAmount, quickDate, quickMessage, quickPresets } from "./quick";
 import { createToken, deleteToken, listTokens, regenerateToken, revokeToken, TOKEN_PREFIX, tokenMayCall, updateToken, userForToken } from "./tokens";
 import { randomUUID } from "node:crypto";
 
@@ -57,7 +57,7 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     if (token.startsWith(TOKEN_PREFIX)) {
       // A personal token: signs in as the user who made it, for everything but destructive routes.
       const user = await userForToken(db, token);
-      if (!user) throw unauthorized("This key is not valid any more. Create a new one in the app under Settings → iPhone shortcut.");
+      if (!user) throw unauthorized("This key is not valid any more. Create a new one in the app under Settings → iPhone & AI apps.");
       if (!tokenMayCall(c.req.method, c.req.path)) {
         throw forbidden("token_scope", "A key can't delete, merge people or manage keys. Do that in the app.");
       }
@@ -120,15 +120,30 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   });
 
   // ── Phone shortcut: presets and quick equal-split add ─────────────────────────────────
-  app.get("/quick/options", async (c) => {
+  // GET or POST: a GET that carries a body (an easy Shortcuts slip) crashes in Netlify's
+  // runtime before reaching this code, while a POST with or without a body always works.
+  const quickOptions = async (c: Ctx) => {
     const presets = await quickPresets(c.var.db, c.var.user);
     return c.json<QuickOptions>({ labels: presets.map((p) => p.label), presets });
+  };
+  app.get("/quick/options", quickOptions);
+  app.post("/quick/options", quickOptions);
+
+  // "Who shared it?": the names to tick for the chosen preset's space, as a plain JSON list so
+  // the shortcut can pass the reply straight to Choose from List. POST so the preset label
+  // (spaces, "·") travels in the body rather than the URL.
+  app.post("/quick/people", async (c) => {
+    const { preset: wanted } = await readBody(c, s.quickPeople);
+    const presets = await quickPresets(c.var.db, c.var.user);
+    return c.json<string[]>(peopleChoices(presets, findPreset(presets, wanted)).map((p) => p.label));
   });
 
   app.post("/quick/expense", async (c) => {
     const body = await readBody(c, s.quickExpense);
     const me = c.var.user;
-    const preset = findPreset(await quickPresets(c.var.db, me), body.preset);
+    const presets = await quickPresets(c.var.db, me);
+    const preset = findPreset(presets, body.preset);
+    const people = pickedPeople(presets, preset, body.people) ?? preset.people;
     const amountPaise = quickAmount(body.amount);
     const title = (body.title?.trim() || "Expense").slice(0, 100);
     const spentOn = quickDate(body.date);
@@ -142,11 +157,11 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
         splitType: "equal",
         spentOn,
         remarks: "",
-        splits: preset.people.map((p) => ({ userId: p.id })),
+        splits: people.map((p) => ({ userId: p.id })),
       }, await activeMemberIds(tx, preset.spaceId));
     });
     const net = await memberNet(c.var.db, preset.spaceId, me.id);
-    return c.json<QuickExpenseResult>({ message: quickMessage(amountPaise, title, preset, net), expense: result.expense }, result.created ? 201 : 200);
+    return c.json<QuickExpenseResult>({ message: quickMessage(amountPaise, title, preset, net, people), expense: result.expense }, result.created ? 201 : 200);
   });
 
   // ── Me ────────────────────────────────────────────────────────────────────────────────
@@ -161,6 +176,7 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   // People you already share a space or group with: the "add someone" dropdowns.
   app.get("/people", async (c) => c.json<Person[]>(await listContacts(c.var.db, c.var.user.id)));
   app.get("/people/directory", async (c) => c.json<Person[]>(await registeredDirectory(c.var.db, c.var.user.id)));
+  app.get("/people/directory/page", async (c) => c.json(await pageRegisteredDirectory(c.var.db, parse(s.directoryPageQuery, c.req.query()))));
 
   // ── Spaces ────────────────────────────────────────────────────────────────────────────
   app.get("/spaces", async (c) => c.json(await listSpaces(c.var.db, c.var.user.id)));
@@ -169,12 +185,18 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   app.post("/spaces", async (c) => {
     const body = await readBody(c, s.createSpace);
     const me = c.var.user;
-    const detail = await c.var.db.transaction(async (tx) => {
+    const result = await c.var.db.transaction(async (tx) => {
+      const spaceId = body.id ?? randomUUID();
       const { rows } = await tx.query<{ id: string }>(
-        "INSERT INTO spaces (name, kind, created_by) VALUES ($1, $2, $3) RETURNING id",
-        [body.name, body.kind, me.id],
+        "INSERT INTO spaces (id, name, kind, created_by) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING RETURNING id",
+        [spaceId, body.name, body.kind, me.id],
       );
-      const spaceId = rows[0]!.id;
+      if (!rows.length) {
+        const existing = await tx.query<{ created_by: string }>("SELECT created_by FROM spaces WHERE id = $1", [spaceId]);
+        if (existing.rows[0]?.created_by !== me.id) throw conflict("id_taken", "That space id is already used.");
+        const { role } = await requireMember(tx, spaceId, me.id);
+        return { detail: await loadSpace(tx, spaceId, role), created: false };
+      }
       await tx.query("INSERT INTO space_members (space_id, user_id, role) VALUES ($1, $2, 'owner')", [spaceId, me.id]);
       await requireContacts(tx, me.id, body.memberIds);
       await requireRegistered(tx, body.directoryIds);
@@ -184,9 +206,9 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
       for (const invite of body.memberInvites) await addEmailToSpace(tx, spaceId, invite.email, invite.name);
       for (const group of body.initialGroups) await createSpaceGroup(tx, spaceId, me.id, group);
       if (body.quickGroupIds.length) await saveQuickActions(tx, spaceId, { mode: "custom", groupIds: body.quickGroupIds });
-      return loadSpace(tx, spaceId, "owner");
+      return { detail: await loadSpace(tx, spaceId, "owner"), created: true };
     });
-    return c.json<SpaceDetail>(detail, 201);
+    return c.json<SpaceDetail>(result.detail, result.created ? 201 : 200);
   });
 
   app.get("/spaces/:id", async (c) => {
@@ -342,6 +364,11 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   app.get("/spaces/:id/months", async (c) => c.json<MonthSummary[]>(await monthlySummary(c.var.db, c.req.param("id"))));
 
   // ── Expenses (any member) ─────────────────────────────────────────────────────────────
+  // One filtered page plus exact totals (the AI-app listing). Every filter and the paging run in the database.
+  app.get("/spaces/:id/expenses/page", async (c) =>
+    c.json<ExpensePage>(await pageExpenses(c.var.db, c.req.param("id"), parse(s.expensePageQuery, c.req.query()))),
+  );
+
   app.get("/spaces/:id/expenses", async (c) => {
     const { month } = parse(s.listQuery, c.req.query());
     return c.json<Expense[]>(await listExpenses(c.var.db, c.req.param("id"), month));
@@ -402,6 +429,12 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     return c.json<{ expenses: Expense[] }>({ expenses: saved }, 201);
   });
 
+  app.get("/expenses/:id", async (c) => {
+    const expense = await findExpense(c.var.db, assertUuid(c.req.param("id"), "That expense"), c.var.user.id);
+    if (!expense) throw notFound("That expense");
+    return c.json<Expense>(expense);
+  });
+
   app.patch("/expenses/:id", async (c) => {
     const expenseId = assertUuid(c.req.param("id"), "That expense");
     const body = await readBody(c, s.updateExpense);
@@ -445,6 +478,10 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
   });
 
   // ── Payments (settlements, any member) ────────────────────────────────────────────────
+  app.get("/spaces/:id/settlements/page", async (c) =>
+    c.json<SettlementPage>(await pageSettlements(c.var.db, c.req.param("id"), parse(s.settlementPageQuery, c.req.query()))),
+  );
+
   app.get("/spaces/:id/settlements", async (c) => {
     const { month } = parse(s.listQuery, c.req.query());
     return c.json<Settlement[]>(await listSettlements(c.var.db, c.req.param("id"), month));
@@ -554,6 +591,7 @@ export function createApp({ db: getDb, verifyToken }: AppDeps) {
     const path = c.req.path.replace(/\/+$/, "");
     if (path === "/api/quick/expense") body.message = `Couldn't add the expense: ${message}`;
     else if (path === "/api/quick/options") body.message = `Couldn't load your choices: ${message}`;
+    else if (path === "/api/quick/people") body.message = `Couldn't load the people: ${message}`;
     return c.json(body, status);
   };
 

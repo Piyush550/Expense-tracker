@@ -1,18 +1,8 @@
 // The whole API as one Netlify Function, served at /api/*.
 import type { Config } from "@netlify/functions";
-import { getDatabase } from "@netlify/database";
-import { createApp } from "../../server/app";
-import { firebaseVerifier } from "../../server/auth";
-import { dbFromPool, type Db } from "../../server/db";
-import { firebaseConfig } from "../../shared/config";
+import { productionApp } from "../../server/production";
 
-// Created on first use and reused while this function instance stays warm.
-let db: Db | undefined;
-
-const app = createApp({
-  db: () => (db ??= dbFromPool(getDatabase().pool)),
-  verifyToken: firebaseVerifier(process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId),
-});
+const app = productionApp();
 
 export default (req: Request) => app.fetch(req);
 

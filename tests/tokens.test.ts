@@ -192,12 +192,56 @@ describe("phone shortcut: errors are readable in the notification", () => {
     await api.call(asha, "POST", `/tokens/${info.id}/revoke`);
     const revoked = await api.call<{ message: string }>(token, "POST", "/quick/expense", { preset: "Flat 4B · Everyone", amount: 10 });
     expect(revoked.status).toBe(401);
-    expect(revoked.body.message).toBe("Couldn't add the expense: This key is not valid any more. Create a new one in the app under Settings → iPhone shortcut.");
+    expect(revoked.body.message).toBe("Couldn't add the expense: This key is not valid any more. Create a new one in the app under Settings → iPhone & AI apps.");
     const options = await api.call<{ message: string }>(token, "GET", "/quick/options");
     expect(options.body.message).toMatch(/^Couldn't load your choices: /);
 
     // Other routes keep the plain shape.
     const other = await api.call<Record<string, unknown>>(asha, "GET", "/spaces/not-a-uuid");
     expect(other.body.message).toBeUndefined();
+  });
+});
+
+describe("phone shortcut: pick who shared it", () => {
+  it("lists the space's people and splits only between the ones picked", async () => {
+    const { space, ashaId, chenId } = await flat();
+    const { token } = await makeToken();
+    const names = await api.call<string[]>(token, "POST", "/quick/people", { preset: "Flat 4B · Everyone" });
+    expect(names.status).toBe(200);
+    expect(names.body.sort()).toEqual(["asha", "bala", "chen"]);
+
+    // As a list (Shortcuts "Array" field)...
+    const picked = await api.call<QuickExpenseResult>(token, "POST", "/quick/expense", { preset: "Flat 4B · Everyone", amount: 300, title: "Cab", people: ["asha", "Chen"] });
+    expect(picked.status).toBe(201);
+    expect(picked.body.expense.shares.map((s) => s.userId).sort()).toEqual([ashaId, chenId].sort());
+    expect(picked.body.message).toBe("Added ₹300 Cab to Flat 4B · split 2 ways. You're owed ₹150 there.");
+
+    // ...or as text, one name per line (Shortcuts "Text" field holding a list).
+    const asText = await api.call<QuickExpenseResult>(token, "POST", "/quick/expense", { preset: `${space.id}.all`, amount: 100, title: "Tea", people: "chen\n" });
+    expect(asText.body.expense.shares.map((s) => s.userId)).toEqual([chenId]);
+
+    // Nobody picked: the preset's people, as before.
+    const none = await api.call<QuickExpenseResult>(token, "POST", "/quick/expense", { preset: "Flat 4B · Everyone", amount: 90, title: "Milk", people: [] });
+    expect(none.body.expense.shares).toHaveLength(3);
+
+    const unknown = await api.call<{ message: string }>(token, "POST", "/quick/expense", { preset: "Flat 4B · Everyone", amount: 90, people: ["zed"] });
+    expect(unknown.status).toBe(422);
+    expect(unknown.body.message).toBe('Couldn\'t add the expense: "zed" is not in Flat 4B. Run the shortcut again.');
+    const badPreset = await api.call<{ message: string }>(token, "POST", "/quick/people", { preset: "Nowhere" });
+    expect(badPreset.body.message).toMatch(/^Couldn't load the people: /);
+  });
+});
+
+describe("phone shortcut: forgiving input", () => {
+  it("loads choices by POST too, and explains an empty choice", async () => {
+    await flat();
+    const { token } = await makeToken();
+    const viaPost = await api.call<QuickOptions>(token, "POST", "/quick/options", {});
+    expect(viaPost.body.labels).toEqual(["Flat 4B · Everyone"]);
+    expect((await api.call<QuickOptions>(token, "POST", "/quick/options")).status).toBe(200);
+    const empty = await api.call<{ message: string; error: { code: string } }>(token, "POST", "/quick/expense", { preset: "", amount: 10 });
+    expect(empty.status).toBe(422);
+    expect(empty.body.error.code).toBe("no_preset");
+    expect(empty.body.message).toMatch(/^Couldn't add the expense: No space was picked\. In the shortcut, check the step before "Which space\?"/);
   });
 });

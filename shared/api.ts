@@ -51,6 +51,15 @@ export interface Person {
   registered: boolean;
 }
 
+/** Public registered-user directory: no email addresses or authentication identifiers. */
+export type DirectoryPerson = Pick<Person, "id" | "name">;
+export interface DirectoryPage {
+  people: DirectoryPerson[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface PersonInvite {
   name: string;
   email: string;
@@ -226,4 +235,20 @@ export interface QuickExpenseResult {
   /** Ready to show in the phone notification. */
   message: string;
   expense: Expense;
+}
+
+/** One page of a space's expenses, with the count and totals of every match (MCP listing). */
+export interface ExpensePage {
+  total: number;
+  totalPaise: number;
+  /** The `involving` person's share across every match; null without that filter. */
+  sharePaise: number | null;
+  items: Expense[];
+}
+
+/** One page of a space's payments, with the count and total of every match. */
+export interface SettlementPage {
+  total: number;
+  totalPaise: number;
+  items: Settlement[];
 }

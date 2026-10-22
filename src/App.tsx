@@ -7,6 +7,8 @@ import { setParams, useSearchParam } from "./lib/url-state";
 import { SettingsPage } from "./components/Account";
 import type { SettingsTab } from "./components/AccountMenu";
 import { AuthShell } from "./components/AuthScreen";
+import { DocsPage } from "./components/DocsPage";
+import { PeopleDirectory } from "./components/PeopleDirectory";
 import { NewSpaceForm } from "./components/NewSpaceForm";
 import { Sidebar } from "./components/Sidebar";
 import { SPACE_TABS, SpaceView, type SpaceTab } from "./components/SpaceView";
@@ -16,7 +18,7 @@ export function App() {
   return status === "ready" ? <SignedIn /> : <AuthShell status={status} />;
 }
 
-// URL: ?s=<space>&t=<tab>&m=<YYYY-MM|all>, or ?v=account.
+// URL: ?s=<space>&t=<tab>&m=<YYYY-MM|all>, ?v=account, ?v=people, or ?v=docs&doc=<guide>.
 function SignedIn() {
   const me = useMe();
   const spaces = useSpaces();
@@ -27,6 +29,7 @@ function SignedIn() {
   const [settingsParam] = useSearchParam("f");
   const settingsTab: SettingsTab = settingsParam === "appearance" || settingsParam === "shortcut" ? settingsParam : "profile";
   const [creating, setCreating] = useState(false);
+  const [initialMemberIds, setInitialMemberIds] = useState<string[]>([]);
 
   const list = spaces.data ?? [];
   const spaceId = list.some((s) => s.id === spaceParam) ? spaceParam : (list[0]?.id ?? null);
@@ -35,7 +38,7 @@ function SignedIn() {
   const tab: SpaceTab = SPACE_TABS.some((t) => t.id === tabParam) ? (tabParam as SpaceTab) : "expenses";
   // Recurring spaces default to this month; one-time spaces always look at everything.
   const month = space?.kind !== "recurring" ? null : monthParam === "all" ? null : monthParam && MONTH_RE.test(monthParam) ? monthParam : currentMonth();
-  const mainView = view === "account" ? "account" : creating || (spaces.data && !list.length) ? "new" : "space";
+  const mainView = creating ? "new" : view === "account" ? "account" : view === "people" ? "people" : view === "docs" ? "docs" : spaces.data && !list.length ? "new" : "space";
 
   const error = me.error ?? spaces.error;
   const select = (id: string) => {
@@ -51,7 +54,9 @@ function SignedIn() {
         selected={spaceId}
         view={mainView}
         onSpace={select}
-        onNewSpace={() => { setParams({ v: null }); setCreating(true); }}
+        onNewSpace={() => { setInitialMemberIds([]); setParams({ v: null }); setCreating(true); }}
+        onDocs={() => { setCreating(false); setParams({ v: "docs", doc: null }); }}
+        onPeople={() => { setCreating(false); setParams({ v: "people" }); }}
         onAccount={(tab) => { setCreating(false); setParams({ v: "account", f: tab === "profile" ? null : tab }); }}
       />
       <main className="main">
@@ -61,6 +66,10 @@ function SignedIn() {
         ) : me.data && spaces.data ? (
           mainView === "account" ? (
             <SettingsPage me={me.data} tab={settingsTab} onTab={(t) => setParams({ f: t === "profile" ? null : t })} />
+          ) : mainView === "docs" ? (
+            <DocsPage />
+          ) : mainView === "people" ? (
+            <PeopleDirectory me={me.data} onNewSpace={(ids) => { setInitialMemberIds(ids); setCreating(true); }} />
           ) : mainView === "new" ? (
             <>
               {!list.length && (
@@ -71,7 +80,7 @@ function SignedIn() {
                   </p>
                 </div>
               )}
-              <NewSpaceForm me={me.data} onCancel={list.length ? () => setCreating(false) : undefined} onDone={(s) => select(s.id)} />
+              <NewSpaceForm key={initialMemberIds.join(",")} initialMemberIds={initialMemberIds} me={me.data} onCancel={list.length || view === "people" ? () => setCreating(false) : undefined} onDone={(s) => select(s.id)} />
             </>
           ) : space ? (
             <SpaceView

@@ -55,6 +55,13 @@ export async function quickPresets(q: Queryable, me: Me): Promise<QuickPreset[]>
 
 export function findPreset(presets: QuickPreset[], wanted: string): QuickPreset {
   const w = wanted.trim();
+  if (!w) {
+    throw new HttpError(
+      422,
+      "no_preset",
+      "No space was picked. In the shortcut, check the step before \"Which space?\": Get Dictionary Value must use the key labels from the first Get Contents of URL.",
+    );
+  }
   const found = presets.find((p) => p.id === w) ?? presets.find((p) => p.label.toLowerCase() === w.toLowerCase());
   if (!found) throw new HttpError(422, "unknown_preset", "That choice is not available any more. Run the shortcut again.");
   return found;
@@ -76,9 +83,45 @@ export function quickDate(date: string | undefined): string {
   return parsed;
 }
 
-export function quickMessage(amountPaise: number, title: string, preset: QuickPreset, myNet: number): string {
-  const n = preset.people.length;
-  const split = n === 1 ? `all on ${preset.people[0]!.name}` : `split ${n} ways`;
+export function quickMessage(amountPaise: number, title: string, preset: QuickPreset, myNet: number, people = preset.people): string {
+  const n = people.length;
+  const split = n === 1 ? `all on ${people[0]!.name}` : `split ${n} ways`;
   const standing = myNet > 0 ? `You're owed ${formatMoney(myNet)} there.` : myNet < 0 ? `You owe ${formatMoney(-myNet)} there.` : "You're square there.";
   return `Added ${formatMoney(amountPaise)} ${title} to ${preset.spaceName} · ${split}. ${standing}`;
+}
+
+/** Everyone currently in the preset's space (the space's "Everyone" preset). */
+function spaceMembers(presets: QuickPreset[], preset: QuickPreset): QuickPreset["people"] {
+  return presets.find((p) => p.spaceId === preset.spaceId && p.groupId === null)?.people ?? preset.people;
+}
+
+/**
+ * Names for the shortcut's "Who shared it?" tick list: the members of the preset's space,
+ * with a number added when two people share a name, so each name maps back to one person.
+ */
+export function peopleChoices(presets: QuickPreset[], preset: QuickPreset): { label: string; id: string }[] {
+  const seen = new Map<string, number>();
+  return spaceMembers(presets, preset).map((p) => {
+    const n = (seen.get(p.name.toLowerCase()) ?? 0) + 1;
+    seen.set(p.name.toLowerCase(), n);
+    return { label: n === 1 ? p.name : `${p.name} (${n})`, id: p.id };
+  });
+}
+
+/**
+ * The people picked in the shortcut, as names (a list, or text with one name per line or
+ * comma-separated). Empty means "use the preset's people".
+ */
+export function pickedPeople(presets: QuickPreset[], preset: QuickPreset, picked: string[] | string | undefined): QuickPreset["people"] | null {
+  const names = (Array.isArray(picked) ? picked : (picked ?? "").split(/[\n,]/)).map((n) => n.trim()).filter(Boolean);
+  if (!names.length) return null;
+  const choices = peopleChoices(presets, preset);
+  const members = spaceMembers(presets, preset);
+  const out: QuickPreset["people"] = [];
+  for (const name of names) {
+    const match = choices.find((c) => c.label.toLowerCase() === name.toLowerCase());
+    if (!match) throw new HttpError(422, "unknown_person", `"${name}" is not in ${preset.spaceName}. Run the shortcut again.`);
+    if (!out.some((p) => p.id === match.id)) out.push(members.find((m) => m.id === match.id)!);
+  }
+  return out;
 }

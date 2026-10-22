@@ -92,6 +92,18 @@ Each row also retains its selected group names and membership snapshots in its l
 Copying a split copies those snapshots independently; changing one row or editing a saved
 group does not silently change another draft row's participants.
 
+## In-app Docs
+
+Open **Docs** under Discover in the signed-in sidebar (on phones, open **Menu** first).
+The page at `?v=docs` is one continuous, scrollable guide: a welcome section, a three-step
+workflow, a sticky topic bar, and eight fully expanded sections. It covers space setup,
+expenses and split methods, groups and quick actions, balances and repayments, people and
+membership, iPhone/AI integrations, settings, and common terms. Topic links jump within the
+page, such as `?v=docs#docs-expenses`; they never replace the content with another screen.
+Old `?v=docs&doc=expenses` links still scroll to the matching section. People and integration
+sections retain links to the relevant app pages. Technical setup and API documentation
+remain in this README and `docs/`.
+
 ## Space groups, onboarding and Quick actions
 
 New spaces use three steps: **Details & people → Groups → Quick actions**. Groups and
@@ -196,7 +208,7 @@ The API is public on the internet. Security comes from the code:
 
 1. Every `/api` request needs a Firebase ID token. `server/auth.ts` verifies its RS256
    signature against Google's keys, plus the issuer, audience, expiry and a verified email.
-   The one exception is a **personal key** (`et_…`, see "iPhone shortcut" below): it signs in
+   The one exception is a **personal key** (`et_…`, see "iPhone shortcut" and "AI apps (MCP)" below): it signs in
    as the user who made it and can use every route **except** destructive ones: any `DELETE`,
    merging a member (`POST /api/spaces/:id/members/:userId/merge`) and anything under
    `/api/tokens`. Those answer 403 `token_scope` and need a normal sign-in, so a stolen key
@@ -331,7 +343,8 @@ Errors look like `{ "error": { "code", "message" } }`.
 | GET / PATCH | `/me` | your profile (`name`) |
 | GET | `/people` | existing contacts (shared spaces) |
 | GET | `/people/directory` | all registered app users except yourself; names and UUIDs, email redacted |
-| GET / POST | `/spaces` | your spaces / create (`name`, `kind`, `memberIds`, `directoryIds`, `memberInvites`, optional `initialGroups` and `quickGroupIds`; `memberEmails` also supported) |
+| GET | `/people/directory/page` | paginated registered users including yourself; `search`, `limit` (1–200), `offset`; names and app IDs only |
+| GET / POST | `/spaces` | your spaces / create (optional retry-safe client `id`, `name`, `kind`, `memberIds`, `directoryIds`, `memberInvites`, optional `initialGroups` and `quickGroupIds`; `memberEmails` also supported) |
 | GET / PATCH / DELETE | `/spaces/:id` | details, members and active months / owner: `name`, `kind`, `simplifyDebts` / owner: delete (all settled) |
 | POST | `/spaces/:id/members` | owner: batch `{ memberIds, directoryIds, memberInvites }`, or `{ userId }`, `{ email }` |
 | PATCH / DELETE | `/spaces/:id/members/:userId` | owner: set `role` / leave yourself, or owner removes (balance must be 0) |
@@ -348,14 +361,18 @@ Errors look like `{ "error": { "code", "message" } }`.
 | GET / POST | `/tokens` | sign-in only: your personal keys / create `{ name, lifetimeDays }` (`null` = never expires; the key is in the reply once) |
 | PATCH / DELETE | `/tokens/:id` | sign-in only: rename or new expiry from today / delete a revoked or expired key |
 | POST | `/tokens/:id/regenerate`, `/tokens/:id/revoke` | sign-in only: new secret for the same entry (old one stops at once) / revoke |
-| GET | `/quick/options` | key or sign-in (keys also work on all other non-destructive routes): `{ labels, presets }`, each space as "Everyone" plus its quick-action groups |
-| POST | `/quick/expense` | key or sign-in: `{ preset, amount, title?, date?, requestId? }`: equal split, paid by you, dated today (India time) by default; returns `{ message, expense }` |
+| GET | `/expenses/:id` | one expense, if you're in its space |
+| GET | `/spaces/:id/expenses/page` | `?month&payer&involving&q&limit&offset`: one page plus the count, total and (with `involving`) that person's share of **every** match; filtering and paging run in the database (used by the MCP server) |
+| GET | `/spaces/:id/settlements/page` | `?month&person&limit&offset`: one page of payments plus the count and total of every match |
+| GET, POST | `/quick/options` | key or sign-in (keys also work on all other non-destructive routes): `{ labels, presets }`, each space as "Everyone" plus its quick-action groups. POST is accepted too, because a GET with a body (an easy Shortcuts mistake) fails at Netlify |
+| POST | `/quick/people` | key or sign-in: `{ preset }` → plain JSON list of the space's member names, for "Who shared it?" |
+| POST | `/quick/expense` | key or sign-in: `{ preset, amount, title?, date?, requestId?, people? }` (`people`: names as a list or one per line; empty = the preset's people): equal split, paid by you, dated today (India time) by default; returns `{ message, expense }` |
 
 ## iPhone shortcut
 
 A personal key lets Apple's Shortcuts app add expenses as you, for example a prompt every
-time you close Swiggy. Create one under **Settings → iPhone shortcut** (the account button at the
-bottom left of the sidebar opens Profile, iPhone shortcut, Appearance and Sign out). The page shows the key
+time you close Swiggy. Create one under **Settings → iPhone & AI apps** (the account button at the
+bottom left of the sidebar opens Profile, iPhone & AI apps, Appearance and Sign out). The page shows the key
 once, lists your keys with when each was last used, and lets you rename, change the expiry,
 regenerate (new secret, old one stops at once), revoke, and delete revoked ones. Each user can
 have up to 10 active keys.
@@ -366,12 +383,17 @@ The shortcut ("Log expense"):
 2. **Choose from Menu** "Spent something?": Yes / Skip (Skip → **Stop This Shortcut**).
 3. **Get Contents of URL** `https://<site>/api/quick/options`, header
    `Authorization: Bearer <key>`.
-4. **Get Dictionary Value** `labels`, then **Choose from List** "Which split?".
-5. **Ask for Input** (Number) "Amount (₹)", then **Ask for Input** (Text) "What for?" with
+4. **Get Dictionary Value** `labels`, then **Choose from List** "Which space / group?".
+5. **Get Contents of URL** `https://<site>/api/quick/people`, POST, same header, JSON body
+   `preset` (Text) = the chosen item. The reply is a plain list of names.
+6. **Choose from List** "Who shared it?" on that reply, with **Select Multiple** on
+   (and **Select All Initially** if you usually split with everyone).
+7. **Ask for Input** (Number) "Amount (₹)", then **Ask for Input** (Text) "What for?" with
    default **Shortcut Input**.
-6. **Get Contents of URL** `https://<site>/api/quick/expense`, POST, same header, JSON body
-   `preset` = chosen item, `amount`, `title`.
-7. **Get Dictionary Value** `message`, then **Show Notification**. The reply always has a
+8. **Get Contents of URL** `https://<site>/api/quick/expense`, POST, same header, JSON body
+   `preset` (Text) = the step 4 choice, `amount` (Number), `title` (Text), `people` (Text) =
+   the names ticked in step 6. Ticking nobody splits with the step 4 choice's people.
+9. **Get Dictionary Value** `message`, then **Show Notification**. The reply always has a
    `message`: on success "Added ₹450 Swiggy to Flat 4B · split 3 ways…", on failure for example
    "Couldn't add the expense: This key is not valid any more…", so a problem is never a blank
    notification.
@@ -380,6 +402,30 @@ Then in the Automation tab: **App** → pick the app → **Is Closed** → Run I
 the actions **Text** "Swiggy" and **Run Shortcut** "Log expense" (input: that text). Repeat
 per app. The presets are each space's "Everyone" plus its quick-action groups, so they follow
 what owners set as shortcuts in the app.
+
+Step-by-step, tap-by-tap instructions and troubleshooting: [docs/IPHONE_SHORTCUT_SETUP.md](docs/IPHONE_SHORTCUT_SETUP.md).
+
+## AI apps (MCP)
+
+`/mcp` is an MCP server (Streamable HTTP, stateless, JSON replies) so Claude and ChatGPT,
+including their phone apps, can read spaces and add expenses as you. It signs in with a
+personal key, sent as `Authorization: Bearer et_…` or as the last part of the address
+(`/mcp/et_…`) for connector forms without a header field; there the connector is added with
+"No authentication". Settings shows the **connector address** next to a new key.
+
+- Code: `server/mcp.ts` (tools), `netlify/functions/mcp.ts` (function at `/mcp` and `/mcp/*`).
+  Tools call the API in-process with the key, so they have exactly a key's scope: no deleting,
+  merging or key management.
+- Tools: `list_people` (paginated registered names/app IDs), `create_space` (monthly or one-time, registered members, caller as owner), `list_spaces`, `get_space`, `list_expenses` (month, payer, person and text filters;
+  paging; exact counts from the database), `list_payments`, `get_balances`, `add_expense`,
+  `add_expenses`, `edit_expense` (needs the version read), `record_payment`. They take names
+  ("me", people, groups; `group:`/`person:` when a name is both), rupees to the paisa (more
+  decimals are refused, not rounded) and dates like "yesterday", and reply in plain text.
+- `npm run dev:local` serves `/mcp` too. Try it with `npx @modelcontextprotocol/inspector`.
+- Setup for users: [docs/AI_APPS_SETUP.md](docs/AI_APPS_SETUP.md). Design and the OAuth next
+  step: [docs/MCP_SERVER_PLAN.md](docs/MCP_SERVER_PLAN.md).
+
+The **People** sidebar section lets signed-in users browse and search the name-only platform directory, select people across pages, and continue new-space onboarding with them selected. The UI and MCP use the same paginated API. Space creation through MCP accepts names or directory IDs and an optional request ID for safe retries; it does not invite new people by email. See [platform people and MCP space creation](docs/PLATFORM_PEOPLE_MCP.md) for examples and verification scenarios.
 
 ## Changing the database
 

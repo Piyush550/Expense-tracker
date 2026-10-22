@@ -22,6 +22,8 @@
     "ci": "tsc --noEmit && vitest run && vite build"
   },
   "dependencies": {
+    "@hono/mcp": "^0.3.2",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@netlify/database": "^2.0.1",
     "@netlify/functions": "^6.0.2",
     "@tanstack/query-sync-storage-persister": "^5.104.5",
